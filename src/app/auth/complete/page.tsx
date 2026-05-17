@@ -53,39 +53,15 @@ export default function AuthCompletePage() {
           return;
         }
 
-        Promise.resolve(
-          supabase
-            .from("users")
-            .select("role")
-            .eq("id", user.id)
-            .single()
-            .then(({ data: profile }) => {
-              const role = profile?.role || "client";
-
-              Promise.resolve(
-                supabase
-                  .from("onboarding_state")
-                  .select("is_completed")
-                  .eq("user_id", user.id)
-                  .single()
-                  .then(({ data: onboardingState }) => {
-                    const hasCompletedOnboarding = onboardingState?.is_completed === true;
-
-                    if (role === "agent" && !hasCompletedOnboarding) {
-                      window.location.href = "/onboarding";
-                    } else if (role === "agent") {
-                      window.location.href = "/dashboard";
-                    } else {
-                      window.location.href = "/explore";
-                    }
-                  })
-              ).catch(() => {
-                window.location.href = "/dashboard";
-              });
-            })
-        ).catch(() => {
-          window.location.href = "/dashboard";
-        });
+        // Fetch redirect path from server-side API that checks role + properties
+        fetch("/api/auth/redirect")
+          .then((res) => res.ok ? res.json() : { redirect: "/dashboard" })
+          .then((data) => {
+            window.location.href = data.redirect || "/dashboard";
+          })
+          .catch(() => {
+            window.location.href = "/dashboard";
+          });
       });
     });
   }, []);

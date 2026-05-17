@@ -1622,3 +1622,30 @@ Stage Summary:
 - **Scope**: All write operations in API routes and mutations now use admin client
 - **Scope**: All read operations in dashboard/property queries now prefer admin client
 - **Safety**: Admin client is only used server-side, never exposed to browser
+---
+Task ID: 11
+Agent: main
+Task: Implement role-based post-sign-in redirect (buyers → explore, agents → dashboard, property-aware)
+
+Work Log:
+- Created shared redirect utility at /src/lib/auth/redirect.ts (getPostLoginRedirect function)
+- Created API endpoint /src/app/api/auth/redirect/route.ts for client-side redirect resolution
+- Created server page /src/app/auth/redirect/page.tsx for middleware-based role-aware redirects
+- Fixed onboarding page: when user selects "I'm a Buyer", now updates users.role to "client" in database (was missing before)
+- Updated LoginForm: after email login, calls /api/auth/redirect to determine redirect based on role + properties
+- Updated auth callback route: uses admin client for role/property/onboarding checks with property-based routing
+- Updated auth complete page: calls /api/auth/redirect instead of manual role checking
+- Updated middleware: redirects authenticated users on auth-only routes to /auth/redirect (server page) instead of hardcoded /dashboard
+- Added /auth/redirect to middleware public routes list
+- Updated auth login page: role-aware redirect for already-authenticated users
+- Updated auth signup page: role-aware redirect for already-authenticated users
+- Updated onboarding completion page: role-aware redirect after onboarding
+- Updated CompletionScreen component: property-aware redirect for buyers
+- Updated onboarding handleFinish and handleSkipAll: buyers with properties → /dashboard, buyers without → /explore
+- Lint passes clean
+
+Stage Summary:
+- **Redirect rules implemented**: Buyer (client) with no properties → /explore; Buyer with properties → /dashboard; Agent/Admin → /dashboard; Not onboarded → /onboarding
+- **Critical fix**: Onboarding now persists client role to database when "I'm a Buyer" is selected
+- **All auth entry points updated**: LoginForm (email login), OAuth callback, auth complete page, middleware, login/signup server pages, onboarding completion
+- **New files**: /src/lib/auth/redirect.ts, /src/app/api/auth/redirect/route.ts, /src/app/auth/redirect/page.tsx

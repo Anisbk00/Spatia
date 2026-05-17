@@ -167,7 +167,19 @@ export function LoginForm({ appOrigin }: LoginFormProps) {
       return;
     }
     fireEvent("LOGIN_SUCCESS", { method: "email" });
-    router.push(redirectPath);
+
+    // Determine redirect based on user role and properties
+    try {
+      const res = await fetch("/api/auth/redirect");
+      if (res.ok) {
+        const data = await res.json();
+        router.push(data.redirect || redirectPath);
+      } else {
+        router.push(redirectPath);
+      }
+    } catch {
+      router.push(redirectPath);
+    }
     router.refresh();
   };
 

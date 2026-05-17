@@ -31,7 +31,7 @@ export async function middleware(request: NextRequest) {
   }
 
   // Simple route protection (no profile check - that's done in page components)
-  const publicRoutes = ["/login", "/auth/callback", "/auth/complete", "/auth/login", "/auth/signup", "/auth/forgot-password", "/auth/reset-password", "/explore", "/viewer", "/view", "/property", "/about", "/privacy", "/terms", "/api"];
+  const publicRoutes = ["/login", "/auth/callback", "/auth/complete", "/auth/login", "/auth/signup", "/auth/forgot-password", "/auth/reset-password", "/auth/redirect", "/explore", "/viewer", "/view", "/property", "/about", "/privacy", "/terms", "/api"];
   const isPublicRoute = publicRoutes.some((route) =>
     route === "/" ? pathname === "/" : pathname.startsWith(route)
   );
@@ -42,8 +42,10 @@ export async function middleware(request: NextRequest) {
   if (isAuthOnlyRoute) {
     const hasSession = request.cookies.getAll().some(c => c.name.startsWith('sb-'));
     if (hasSession) {
+      // Redirect to a server page that determines the correct post-login
+      // destination based on the user's role and properties
       const url = request.nextUrl.clone();
-      url.pathname = "/dashboard";
+      url.pathname = "/auth/redirect";
       return NextResponse.redirect(url);
     }
     return response;

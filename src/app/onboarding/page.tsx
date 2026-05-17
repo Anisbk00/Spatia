@@ -230,7 +230,13 @@ export default function OnboardingPage() {
       setCompletedSteps([0]);
       goToStep(1);
     } else {
-      // Client: skip org setup and property creation, go to tutorial
+      // Client: update role to "client" in the database, skip org setup and property creation
+      if (supabase && userId) {
+        await supabase
+          .from("users")
+          .update({ role: "client" })
+          .eq("id", userId);
+      }
       await saveOnboardingState(3, [0], { metadata: { role: "client" } });
       setCompletedSteps([0]);
       goToStep(3);
@@ -375,7 +381,12 @@ export default function OnboardingPage() {
       console.error("[Onboarding] Failed to mark onboarding complete:", err);
     }
 
-    router.push("/dashboard");
+    // Buyers with properties go to dashboard, buyers without go to explore
+    if (userRole === "client") {
+      router.push(propertyCreated ? "/dashboard" : "/explore");
+    } else {
+      router.push("/dashboard");
+    }
   };
 
   const handleSkipAll = async () => {
@@ -396,7 +407,12 @@ export default function OnboardingPage() {
       console.error("[Onboarding] Failed to save skip state:", err);
     }
 
-    router.push("/dashboard");
+    // Buyers go to explore (no properties in skip path), agents/admins go to dashboard
+    if (userRole === "client") {
+      router.push("/explore");
+    } else {
+      router.push("/dashboard");
+    }
   };
 
   const handleSkipSetup = async () => {

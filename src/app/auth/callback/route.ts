@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { createAdminClient } from "@/lib/supabase/server";
 
 function isSupabaseConfigured(): boolean {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -80,31 +81,52 @@ export async function GET(request: NextRequest) {
 
     // Check if user has completed onboarding (only if redirectPath is still "/")
     if (redirectPath === "/") {
-      let role = "client";
-      let hasCompletedOnboarding = false;
-
       try {
-        const { data: profile } = await supabase
-          .from("users")
-          .select("role")
-          .eq("id", user.id)
-          .single();
-        role = profile?.role || "client";
+        const admin = createAdminClient();
 
-        const { data: onboardingState } = await supabase
-          .from("onboarding_state")
-          .select("is_completed")
-          .eq("user_id", user.id)
-          .single();
-        hasCompletedOnboarding = onboardingState?.is_completed === true;
+        if (admin) {
+          // 1. Check onboarding completion
+          const { data: onboardingState } = await admin
+            .from("onboarding_state")
+            .select("is_completed")
+            .eq("user_id", user.id)
+            .maybeSingle();
+
+          const hasCompletedOnboarding = onboardingState?.is_completed === true;
+
+          if (!hasCompletedOnboarding) {
+            redirectPath = "/onboarding";
+          } else {
+            // 2. Check user role
+            const { data: profile } = await admin
+              .from("users")
+              .select("role")
+              .eq("id", user.id)
+              .single();
+
+            const role = profile?.role || "client";
+
+            // Agents and admins always go to dashboard
+            if (role === "agent" || role === "admin") {
+              redirectPath = "/dashboard";
+            } else {
+              // 3. Buyers (clients): check if they own properties
+              const { count } = await admin
+                .from("properties")
+                .select("*", { count: "exact", head: true })
+                .eq("owner_id", user.id);
+
+              // Buyers with properties go to dashboard, buyers without go to explore
+              redirectPath = (count && count > 0) ? "/dashboard" : "/explore";
+            }
+          }
+        } else {
+          // Fallback: no admin client available
+          redirectPath = "/dashboard";
+        }
       } catch (err) {
         console.error("[Auth Callback] Profile/onboarding lookup failed:", err);
-      }
-
-      if (role === "agent") {
-        redirectPath = hasCompletedOnboarding ? "/dashboard" : "/onboarding";
-      } else {
-        redirectPath = "/explore";
+        redirectPath = "/dashboard";
       }
     }
 

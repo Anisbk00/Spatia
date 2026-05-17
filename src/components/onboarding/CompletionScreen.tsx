@@ -55,7 +55,12 @@ export function CompletionScreen({
 
     await markOnboardingComplete();
 
-    router.push(isClient ? "/explore" : "/dashboard");
+    // Buyers with properties go to dashboard, buyers without go to explore
+    if (isClient) {
+      router.push(hasProperty ? "/dashboard" : "/explore");
+    } else {
+      router.push("/dashboard");
+    }
   };
 
   return (
