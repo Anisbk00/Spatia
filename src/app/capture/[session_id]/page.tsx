@@ -14,7 +14,12 @@ export default async function CaptureSessionPage({
   params: Promise<{ session_id: string }>;
 }) {
   const { session_id } = await params;
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    return <CaptureSessionClient sessionId={session_id} initialData={null} />;
+  }
 
   if (!supabase) {
     return <CaptureSessionClient sessionId={session_id} initialData={null} />;
@@ -33,11 +38,12 @@ export default async function CaptureSessionPage({
   const readClient = adminClient || supabase;
 
   // Verify agent/admin role
+  // Use maybeSingle() — single() throws PGRST116 if no row exists
   const { data: profile } = await readClient
     .from("users")
     .select("role")
     .eq("id", user.id)
-    .single();
+    .maybeSingle();
 
   if (!profile || (profile.role !== "agent" && profile.role !== "admin")) {
     redirect("/explore");
@@ -48,7 +54,7 @@ export default async function CaptureSessionPage({
     .from("capture_sessions")
     .select("*")
     .eq("id", session_id)
-    .single();
+    .maybeSingle();
 
   if (!session) {
     return <CaptureSessionClient sessionId={session_id} initialData={null} />;
@@ -59,7 +65,7 @@ export default async function CaptureSessionPage({
     .from("properties")
     .select("*")
     .eq("id", session.property_id)
-    .single();
+    .maybeSingle();
 
   if (!property) {
     return <CaptureSessionClient sessionId={session_id} initialData={null} />;

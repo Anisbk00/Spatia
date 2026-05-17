@@ -48,11 +48,12 @@ export async function getPostLoginRedirect(userId: string): Promise<string> {
     }
 
     // 2. Check user role
+    // Use maybeSingle() — single() throws PGRST116 if no row exists
     const { data: profile } = await admin
       .from("users")
       .select("role")
       .eq("id", userId)
-      .single();
+      .maybeSingle();
 
     const role = profile?.role || "client";
 

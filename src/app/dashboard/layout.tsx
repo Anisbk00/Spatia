@@ -60,11 +60,12 @@ export default async function DashboardLayout({
     const adminClient = createAdminClient();
     const readClient = adminClient || supabase;
 
+    // Use maybeSingle() — single() throws PGRST116 if no row exists
     const { data: profile } = await readClient
       .from("users")
       .select("*")
       .eq("id", authUser.id)
-      .single();
+      .maybeSingle();
 
     // All authenticated users with a profile can access the dashboard
     if (!profile) {

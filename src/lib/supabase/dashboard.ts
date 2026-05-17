@@ -417,7 +417,7 @@ export async function getPropertyDetail(propertyId: string, orgId: string | null
       query = query.eq("created_by", userId);
     }
 
-    const { data: property, error: propertyError } = await query.single();
+    const { data: property, error: propertyError } = await query.maybeSingle();
 
     if (propertyError || !property) return null;
 
@@ -744,7 +744,7 @@ export async function getBillingData(orgId: string): Promise<BillingData> {
     .eq("org_id", orgId)
     .order("created_at", { ascending: false })
     .limit(1)
-    .single();
+    .maybeSingle();
 
   // Get plan
   let plan = null;
@@ -753,7 +753,7 @@ export async function getBillingData(orgId: string): Promise<BillingData> {
       .from("plans")
       .select("*")
       .eq("id", subscription.plan_id)
-      .single();
+      .maybeSingle();
     plan = planData;
   } else {
     // Default to free plan
@@ -761,7 +761,7 @@ export async function getBillingData(orgId: string): Promise<BillingData> {
       .from("plans")
       .select("*")
       .eq("name", "free")
-      .single();
+      .maybeSingle();
     plan = freePlan;
   }
 

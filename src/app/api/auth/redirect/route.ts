@@ -49,11 +49,12 @@ export async function GET() {
     }
 
     // 2. Check user role
+    // Use maybeSingle() — single() throws PGRST116 if no row exists
     const { data: profile } = await admin
       .from("users")
       .select("role")
       .eq("id", user.id)
-      .single();
+      .maybeSingle();
 
     let role = profile?.role || "client";
 

@@ -34,7 +34,7 @@ export default async function ExplorePage() {
           .from("users")
           .select("id, role, email, full_name")
           .eq("id", user.id)
-          .single();
+          .maybeSingle();
         if (!error) {
           profile = data;
         }

@@ -45,11 +45,12 @@ export default async function ProcessingPage({
   const readClient = adminClient || supabase;
 
   // Fetch session + property for context
+  // Use maybeSingle() — single() throws PGRST116 if no row exists
   const { data: session } = await readClient
     .from("capture_sessions")
     .select("*, properties(*)")
     .eq("id", session_id)
-    .single();
+    .maybeSingle();
 
   const property = session?.properties as {
     id: string;

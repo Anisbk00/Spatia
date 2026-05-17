@@ -4,7 +4,12 @@ import { CompletionScreen } from "@/components/onboarding/CompletionScreen";
 import type { OnboardingState } from "@/lib/types";
 
 export default async function CompletionOnboardingPage() {
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    redirect("/auth/login");
+  }
 
   if (!supabase) {
     redirect("/auth/login");
@@ -25,44 +30,57 @@ export default async function CompletionOnboardingPage() {
   const adminClient = createAdminClient();
   const readClient = adminClient || supabase;
 
-  // Check user role for role-specific completion content
-  const { data: profile } = await readClient
-    .from("users")
-    .select("role")
-    .eq("id", userId)
-    .single();
-  const userRole = profile?.role || "client";
+  try {
+    // Check user role for role-specific completion content
+    // Use maybeSingle() — single() throws PGRST116 if no row exists
+    const { data: profile } = await readClient
+      .from("users")
+      .select("role")
+      .eq("id", userId)
+      .maybeSingle();
+    const userRole = profile?.role || "client";
 
-  // Get full onboarding state
-  const { data: onboardingState } = await readClient
-    .from("onboarding_state")
-    .select("*")
-    .eq("user_id", userId)
-    .maybeSingle();
+    // Get full onboarding state
+    const { data: onboardingState } = await readClient
+      .from("onboarding_state")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
 
-  // If onboarding already completed, redirect based on role
-  if (onboardingState?.is_completed) {
-    // Use the role-aware redirect page
-    redirect("/auth/redirect");
+    // If onboarding already completed, redirect based on role
+    if (onboardingState?.is_completed) {
+      // Use the role-aware redirect page
+      redirect("/auth/redirect");
+    }
+
+    // Get org membership for context
+    const { data: membership } = await readClient
+      .from("organization_members")
+      .select("org_id")
+      .eq("user_id", userId)
+      .limit(1)
+      .maybeSingle();
+
+    const orgId = membership?.org_id ?? null;
+
+    return (
+      <CompletionScreen
+        userId={userId}
+        userEmail={userEmail}
+        orgId={orgId}
+        onboardingState={(onboardingState as OnboardingState) ?? null}
+        userRole={userRole}
+      />
+    );
+  } catch (err) {
+    // Re-throw Next.js redirect errors
+    if (err && typeof err === "object" && "digest" in err && typeof (err as { digest: unknown }).digest === "string") {
+      const digest = (err as { digest: string }).digest;
+      if (digest.startsWith("NEXT_REDIRECT") || digest.startsWith("NEXT_NOT_FOUND")) {
+        throw err;
+      }
+    }
+    console.error("[CompletionOnboarding] Error:", err);
+    redirect("/onboarding");
   }
-
-  // Get org membership for context
-  const { data: membership } = await readClient
-    .from("organization_members")
-    .select("org_id")
-    .eq("user_id", userId)
-    .limit(1)
-    .maybeSingle();
-
-  const orgId = membership?.org_id ?? null;
-
-  return (
-    <CompletionScreen
-      userId={userId}
-      userEmail={userEmail}
-      orgId={orgId}
-      onboardingState={(onboardingState as OnboardingState) ?? null}
-      userRole={userRole}
-    />
-  );
 }

@@ -25,7 +25,7 @@ export async function getProperty(propertyId: string): Promise<Property | null> 
     .from("properties")
     .select("*")
     .eq("id", propertyId)
-    .single();
+    .maybeSingle();
 
   if (error || !data) return null;
   return data as Property;
@@ -45,7 +45,7 @@ export async function getPropertyScene(propertyId: string): Promise<Scene | null
     .eq("status", "ready")
     .order("created_at", { ascending: false })
     .limit(1)
-    .single();
+    .maybeSingle();
 
   if (error || !data) return null;
   return data as Scene;
