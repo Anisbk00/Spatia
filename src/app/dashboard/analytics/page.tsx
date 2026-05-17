@@ -18,9 +18,16 @@ export default async function AnalyticsPage() {
   const supabase = await createClient();
   if (!supabase) redirect("/auth/login");
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error("[DashboardAnalytics] getUser error:", error.message);
+    }
+    user = data.user;
+  } catch (err) {
+    console.error("[DashboardAnalytics] getUser threw:", err);
+  }
   if (!user) redirect("/auth/login");
 
   const { organization } = await getUserOrganization(user.id);

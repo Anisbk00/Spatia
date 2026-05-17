@@ -14,7 +14,16 @@ export default async function AuthForgotPasswordPage() {
 
   // If user is already authenticated, redirect to settings
   if (supabase) {
-    const { data: { user } } = await supabase.auth.getUser();
+    let user;
+    try {
+      const { data, error } = await supabase.auth.getUser();
+      if (error) {
+        console.error("[AuthForgotPassword] getUser error:", error.message);
+      }
+      user = data.user;
+    } catch (err) {
+      console.error("[AuthForgotPassword] getUser threw:", err);
+    }
     if (user) {
       redirect("/dashboard/settings");
     }

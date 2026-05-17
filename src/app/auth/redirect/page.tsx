@@ -17,15 +17,28 @@ import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 
 export default async function AuthRedirectPage() {
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    console.error("[AuthRedirect] createClient failed:", err);
+    redirect("/auth/login");
+  }
 
   if (!supabase) {
     redirect("/auth/login");
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error("[AuthRedirect] getUser error:", error.message);
+    }
+    user = data.user;
+  } catch (err) {
+    console.error("[AuthRedirect] getUser threw:", err);
+  }
 
   if (!user) {
     redirect("/auth/login");

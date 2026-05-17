@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -17,6 +18,15 @@ export default function NewPropertyError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  useEffect(() => {
+    console.error("[NewPropertyPage] Server component error:", error);
+    console.error("[NewPropertyPage] Error message:", error.message);
+    console.error("[NewPropertyPage] Error digest:", error.digest);
+    if (error.cause) {
+      console.error("[NewPropertyPage] Error cause:", error.cause);
+    }
+  }, [error]);
+
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <Card className="w-full max-w-md border-0 shadow-xl">

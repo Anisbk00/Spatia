@@ -14,9 +14,16 @@ export default async function TutorialOnboardingPage() {
     redirect("/auth/login");
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error("[Tutorial] getUser error:", error.message);
+    }
+    user = data.user;
+  } catch (err) {
+    console.error("[Tutorial] getUser threw:", err);
+  }
 
   if (!user) {
     redirect("/auth/login");

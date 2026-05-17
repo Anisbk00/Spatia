@@ -18,7 +18,12 @@ export default async function ProcessingPage({
   params: Promise<{ session_id: string }>;
 }) {
   const { session_id } = await params;
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    console.error("[Processing] createClient threw:", err);
+  }
 
   if (!supabase) {
     return (
@@ -32,9 +37,16 @@ export default async function ProcessingPage({
     );
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error("[Processing] getUser error:", error.message);
+    }
+    user = data.user;
+  } catch (err) {
+    console.error("[Processing] getUser threw:", err);
+  }
 
   if (!user) {
     redirect("/auth/login");

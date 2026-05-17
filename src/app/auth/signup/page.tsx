@@ -13,7 +13,16 @@ export default async function AuthSignupPage() {
 
   // If user is already authenticated, redirect to role-aware page
   if (supabase) {
-    const { data: { user } } = await supabase.auth.getUser();
+    let user;
+    try {
+      const { data, error } = await supabase.auth.getUser();
+      if (error) {
+        console.error("[AuthSignup] getUser error:", error.message);
+      }
+      user = data.user;
+    } catch (err) {
+      console.error("[AuthSignup] getUser threw:", err);
+    }
     if (user) {
       redirect("/auth/redirect");
     }

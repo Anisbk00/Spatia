@@ -14,9 +14,16 @@ export default async function OrganizationOnboardingPage() {
     redirect("/auth/login");
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error("[Organization] getUser error:", error.message);
+    }
+    user = data.user;
+  } catch (err) {
+    console.error("[Organization] getUser threw:", err);
+  }
 
   if (!user) {
     redirect("/auth/login");

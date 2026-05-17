@@ -141,9 +141,16 @@ export default async function BillingPage() {
   const supabase = await createClient();
   if (!supabase) redirect("/auth/login");
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error("[DashboardBilling] getUser error:", error.message);
+    }
+    user = data.user;
+  } catch (err) {
+    console.error("[DashboardBilling] getUser threw:", err);
+  }
   if (!user) redirect("/auth/login");
 
   const { organization } = await getUserOrganization(user.id);

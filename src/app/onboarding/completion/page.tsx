@@ -15,9 +15,16 @@ export default async function CompletionOnboardingPage() {
     redirect("/auth/login");
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error("[Completion] getUser error:", error.message);
+    }
+    user = data.user;
+  } catch (err) {
+    console.error("[Completion] getUser threw:", err);
+  }
 
   if (!user) {
     redirect("/auth/login");

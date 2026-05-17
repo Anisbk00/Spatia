@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { PropertyForm } from "@/components/property-form";
 import {
   Card,
@@ -23,11 +23,25 @@ export default async function NewPropertyPage({
   const { mode } = await searchParams;
   const isVideoMode = mode === "video";
 
-  const t = await getTranslations("property");
-  const tc = await getTranslations("common");
-  const tl = await getTranslations("landing");
+  let t: Awaited<ReturnType<typeof getTranslations>>;
+  let tc: Awaited<ReturnType<typeof getTranslations>>;
+  let tl: Awaited<ReturnType<typeof getTranslations>>;
 
-  const supabase = await createClient();
+  try {
+    t = await getTranslations("property");
+    tc = await getTranslations("common");
+    tl = await getTranslations("landing");
+  } catch (err) {
+    console.error("[NewPropertyPage] getTranslations failed:", err);
+    redirect("/explore");
+  }
+
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    console.error("[NewPropertyPage] createClient failed:", err);
+  }
 
   if (!supabase) {
     return (
@@ -44,7 +58,16 @@ export default async function NewPropertyPage({
     );
   }
 
-  const { data: { user } } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error("[NewPropertyPage] getUser error:", error.message);
+    }
+    user = data.user;
+  } catch (err) {
+    console.error("[NewPropertyPage] getUser threw:", err);
+  }
 
   if (!user) {
     redirect("/auth/login");
