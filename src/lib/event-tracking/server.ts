@@ -119,6 +119,10 @@ export async function trackServerEvent(
   const deviceType = extractDeviceType(userAgent);
   const ipAddress = request ? extractIpAddress(request) : null;
 
+  // Validate IP address format for PostgreSQL inet type
+  const isValidInet = (ip: string): boolean => /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/.test(ip);
+  const safeIpAddress = ipAddress && isValidInet(ipAddress) ? ipAddress : null;
+
   const insertData = {
     user_id: userId || null,
     org_id: orgId || null,
@@ -126,7 +130,7 @@ export async function trackServerEvent(
     metadata,
     device_type: deviceType,
     user_agent: truncateUserAgent(userAgent),
-    ip_address: ipAddress,
+    ip_address: safeIpAddress,
   };
 
   const { data, error } = await supabase
@@ -176,6 +180,10 @@ export async function trackServerEventBatch(
   const deviceType = extractDeviceType(userAgent);
   const ipAddress = request ? extractIpAddress(request) : null;
 
+  // Validate IP address format for PostgreSQL inet type
+  const isValidInet = (ip: string): boolean => /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/.test(ip);
+  const safeIpAddress = ipAddress && isValidInet(ipAddress) ? ipAddress : null;
+
   const rows = events.map((event) => ({
     user_id: userId || null,
     org_id: orgId || null,
@@ -186,7 +194,7 @@ export async function trackServerEventBatch(
     scene_id: event.scene_id || null,
     device_type: deviceType,
     user_agent: truncateUserAgent(userAgent),
-    ip_address: ipAddress,
+    ip_address: safeIpAddress,
   }));
 
   const { data, error } = await supabase
