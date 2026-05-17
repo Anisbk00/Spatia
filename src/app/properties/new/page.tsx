@@ -15,42 +15,129 @@ import { SpatiaLogo } from "@/components/SpatiaLogo";
 import { signOutAction } from "@/lib/actions/auth";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 
+function isNextRedirect(err: unknown): boolean {
+  if (err && typeof err === "object" && "digest" in err) {
+    const digest = (err as { digest: string }).digest;
+    return digest.startsWith("NEXT_REDIRECT") || digest.startsWith("NEXT_NOT_FOUND");
+  }
+  return false;
+}
+
+// Error display component for debugging
+function DebugErrorCard({ error }: { error: unknown }) {
+  const realMessage = error instanceof Error ? error.message : String(error);
+  const realStack = error instanceof Error ? error.stack : undefined;
+  const realName = error instanceof Error ? error.constructor.name : "Unknown";
+  const digest = (error as { digest?: string })?.digest;
+
+  return (
+    <div className="flex min-h-screen items-center justify-center p-4">
+      <Card className="w-full max-w-lg border-2 border-red-200 shadow-xl">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
+            <span className="text-xl">⚠️</span>
+          </div>
+          <CardTitle>Page Error (Debug)</CardTitle>
+          <CardDescription>The real error is shown below to help debug</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="rounded-lg bg-red-50 border border-red-200 p-3">
+            <p className="text-xs font-semibold text-red-800 mb-1">Error Type:</p>
+            <p className="text-sm text-red-900 font-mono break-all">{realName}</p>
+          </div>
+          <div className="rounded-lg bg-red-50 border border-red-200 p-3">
+            <p className="text-xs font-semibold text-red-800 mb-1">Message:</p>
+            <p className="text-sm text-red-900 font-mono break-all whitespace-pre-wrap">{realMessage}</p>
+          </div>
+          {digest && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 p-3">
+              <p className="text-xs font-semibold text-amber-800 mb-1">Digest:</p>
+              <p className="text-sm text-amber-900 font-mono">{digest}</p>
+            </div>
+          )}
+          {realStack && (
+            <div className="rounded-lg bg-gray-50 border border-gray-200 p-3 max-h-48 overflow-y-auto">
+              <p className="text-xs font-semibold text-gray-800 mb-1">Stack:</p>
+              <p className="text-xs text-gray-700 font-mono whitespace-pre-wrap break-all">{realStack}</p>
+            </div>
+          )}
+          <div className="flex gap-3 pt-2">
+            <Button onClick={() => window.location.reload()} variant="outline" className="flex-1">
+              Try again
+            </Button>
+            <Button asChild variant="outline" className="flex-1">
+              <a href="/explore">Back to Explore</a>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default async function NewPropertyPage({
   searchParams,
 }: {
   searchParams: Promise<{ mode?: string }>;
 }) {
-  const { mode } = await searchParams;
-  const isVideoMode = mode === "video";
-
-  let t: Awaited<ReturnType<typeof getTranslations>>;
-  let tc: Awaited<ReturnType<typeof getTranslations>>;
-  let tl: Awaited<ReturnType<typeof getTranslations>>;
+  // Phase 1: Data fetching — all async operations with error capture
+  let isVideoMode = false;
+  let t: Awaited<ReturnType<typeof getTranslations>> | null = null;
+  let tc: Awaited<ReturnType<typeof getTranslations>> | null = null;
+  let tl: Awaited<ReturnType<typeof getTranslations>> | null = null;
+  let user: { id: string } | null = null;
+  let fetchError: unknown = null;
 
   try {
+    const { mode } = await searchParams;
+    isVideoMode = mode === "video";
+
     t = await getTranslations("property");
     tc = await getTranslations("common");
     tl = await getTranslations("landing");
+
+    let supabase;
+    try {
+      supabase = await createClient();
+    } catch (err) {
+      console.error("[NewPropertyPage] createClient failed:", err);
+    }
+
+    if (!supabase) {
+      // Not an error — just not configured. Will be handled in render phase.
+    } else {
+      try {
+        const { data, error } = await supabase.auth.getUser();
+        if (error) {
+          console.error("[NewPropertyPage] getUser error:", error.message);
+        }
+        user = data.user;
+      } catch (err) {
+        console.error("[NewPropertyPage] getUser threw:", err);
+      }
+    }
   } catch (err) {
-    console.error("[NewPropertyPage] getTranslations failed:", err);
-    redirect("/explore");
+    if (isNextRedirect(err)) {
+      throw err;
+    }
+    console.error("[NewPropertyPage] Data fetch error:", err);
+    fetchError = err;
   }
 
-  let supabase;
-  try {
-    supabase = await createClient();
-  } catch (err) {
-    console.error("[NewPropertyPage] createClient failed:", err);
+  // Phase 2: Render — if there was an error, show debug info
+  if (fetchError) {
+    return <DebugErrorCard error={fetchError} />;
   }
 
-  if (!supabase) {
+  // Not configured
+  if (!t || !tc || !tl) {
     return (
       <div className="flex min-h-screen items-center justify-center p-4">
         <Card className="w-full max-w-md border-0 shadow-xl">
           <CardHeader className="text-center">
-            <CardTitle>{t("supabaseNotConfigured")}</CardTitle>
+            <CardTitle>Service Not Configured</CardTitle>
             <CardDescription>
-              {t("supabaseNotConfiguredDesc")}
+              Please configure your Supabase environment variables.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -58,21 +145,12 @@ export default async function NewPropertyPage({
     );
   }
 
-  let user;
-  try {
-    const { data, error } = await supabase.auth.getUser();
-    if (error) {
-      console.error("[NewPropertyPage] getUser error:", error.message);
-    }
-    user = data.user;
-  } catch (err) {
-    console.error("[NewPropertyPage] getUser threw:", err);
-  }
-
+  // Not authenticated
   if (!user) {
     redirect("/auth/login");
   }
 
+  // Phase 3: Normal render
   return (
     <div className="min-h-screen flex flex-col bg-gradient-to-br from-emerald-50 via-white to-emerald-50/40">
       {/* Top Nav */}
