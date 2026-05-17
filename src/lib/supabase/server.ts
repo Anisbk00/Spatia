@@ -70,3 +70,18 @@ export function createAdminClient() {
     }
   );
 }
+
+/**
+ * Get a Supabase client for read operations.
+ * Prefers admin client (bypasses RLS) to ensure server-side reads always succeed,
+ * falls back to user-context client if admin is unavailable.
+ *
+ * Use this for all server-side data queries to avoid RLS-related failures.
+ */
+export async function getReadClient() {
+  const adminClient = createAdminClient();
+  if (adminClient) return adminClient;
+
+  const userClient = await createClient();
+  return userClient;
+}

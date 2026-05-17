@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import type {
   Organization,
   OrganizationMember,
@@ -35,7 +35,9 @@ export async function resolveUserOrg(
   userId: string,
 ): Promise<OrgResult<OrgResolution>> {
   try {
-    const supabase = await createClient();
+    // Use admin client to bypass RLS on organization_members
+    const adminClient = createAdminClient();
+    const supabase = adminClient || await createClient();
     if (!supabase) {
       return {
         data: { organization: null, membership: null, members: [] },
@@ -51,6 +53,7 @@ export async function resolveUserOrg(
       .order("created_at", { ascending: true });
 
     if (memberError) {
+      console.error("[resolveUserOrg] Memberships query error:", memberError.message);
       return {
         data: { organization: null, membership: null, members: [] },
         error: "auth.errorOrgResolutionFailed",
@@ -96,7 +99,8 @@ export async function resolveUserOrg(
       },
       error: null,
     };
-  } catch {
+  } catch (err) {
+    console.error("[resolveUserOrg] Unexpected error:", err);
     return {
       data: { organization: null, membership: null, members: [] },
       error: "auth.errorOrgResolutionFailed",
@@ -126,7 +130,9 @@ export async function createOrganization(
   }>
 > {
   try {
-    const supabase = await createClient();
+    // Use admin client to bypass RLS on organizations and organization_members
+    const adminClient = createAdminClient();
+    const supabase = adminClient || await createClient();
     if (!supabase) {
       return {
         data: { organization: null, membership: null },
@@ -163,6 +169,7 @@ export async function createOrganization(
       .single();
 
     if (orgError || !org) {
+      console.error("[createOrganization] Org insert error:", orgError?.message);
       return {
         data: { organization: null, membership: null },
         error: "auth.errorOrgCreationFailed",
@@ -181,6 +188,7 @@ export async function createOrganization(
       .single();
 
     if (memberError) {
+      console.error("[createOrganization] Membership insert error:", memberError.message);
       // Org was created but membership failed — still return the org
       return {
         data: { organization: org as Organization, membership: null },
@@ -195,7 +203,8 @@ export async function createOrganization(
       },
       error: null,
     };
-  } catch {
+  } catch (err) {
+    console.error("[createOrganization] Unexpected error:", err);
     return {
       data: { organization: null, membership: null },
       error: "auth.errorOrgCreationFailed",
@@ -230,8 +239,10 @@ export async function ensureOrgMembership(
     }
 
     // User has no org — create a default one
-    // Fetch user email for the org name
-    const supabase = await createClient();
+    // Use admin client to bypass RLS
+    const adminClient = createAdminClient();
+    const userClient = await createClient();
+    const supabase = adminClient || userClient;
     if (!supabase) {
       return {
         data: { organization: null, membership: null, members: [] },
@@ -239,12 +250,15 @@ export async function ensureOrgMembership(
       };
     }
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    // Get user email from auth (admin client doesn't have session, use user client for auth)
+    let userEmail = "";
+    if (userClient) {
+      const { data: { user } } = await userClient.auth.getUser();
+      userEmail = user?.email ?? "";
+    }
 
-    const orgName = user?.email
-      ? `${user.email.split("@")[0]}'s Agency`
+    const orgName = userEmail
+      ? `${userEmail.split("@")[0]}'s Agency`
       : "My Agency";
 
     const createResult = await createOrganization(userId, orgName);
@@ -286,7 +300,9 @@ export async function getOrgRole(
   orgId: string,
 ): Promise<OrgResult<OrgRole | null>> {
   try {
-    const supabase = await createClient();
+    // Use admin client to bypass RLS on organization_members
+    const adminClient = createAdminClient();
+    const supabase = adminClient || await createClient();
     if (!supabase) {
       return { data: null, error: "auth.errorServiceNotConfigured" };
     }
@@ -299,11 +315,13 @@ export async function getOrgRole(
       .maybeSingle();
 
     if (error) {
+      console.error("[getOrgRole] Query error:", error.message);
       return { data: null, error: "auth.errorRoleLookupFailed" };
     }
 
     return { data: (data?.role as OrgRole) ?? null, error: null };
-  } catch {
+  } catch (err) {
+    console.error("[getOrgRole] Unexpected error:", err);
     return { data: null, error: "auth.errorRoleLookupFailed" };
   }
 }

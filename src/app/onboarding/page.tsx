@@ -264,59 +264,29 @@ export default function OnboardingPage() {
     setFormError(null);
 
     try {
-      if (supabase && userId) {
-        // Generate a referral code using the database RPC
-        let referralCode = "";
-        try {
-          const { data: rpcCode } = await supabase.rpc("generate_referral_code");
-          referralCode = rpcCode || "";
-        } catch (err) {
-          console.error("[Onboarding] Referral code RPC failed, using fallback:", err);
-          const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-          const arr = new Uint8Array(8);
-          crypto.getRandomValues(arr);
-          referralCode = Array.from(arr, (b) => chars[b % chars.length]).join("");
-        }
-
-        // Create organization
-        const { data: org, error: orgError } = await supabase
-          .from("organizations")
-          .insert({
+      if (userId) {
+        // Use server-side API route (admin client) to bypass RLS
+        const res = await fetch("/api/onboarding/create-org", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
             name: agencyName.trim(),
-            owner_id: userId,
-            plan: "free",
-            referral_code: referralCode,
-          })
-          .select()
-          .single();
+            role,
+          }),
+        });
 
-        if (orgError) {
-          console.error("Org creation error:", orgError);
-          setFormError("Failed to create organization. Please try again.");
+        if (!res.ok) {
+          const data = await res.json();
+          console.error("Org creation error:", data);
+          setFormError(data.error || "Failed to create organization. Please try again.");
           setLoading(false);
           return;
         }
 
-        setOrgId(org.id);
-
-        // Create membership
-        const { error: memberError } = await supabase
-          .from("organization_members")
-          .insert({
-            org_id: org.id,
-            user_id: userId,
-            role: "owner",
-          });
-
-        if (memberError) {
-          console.error("Member creation error:", memberError);
+        const data = await res.json();
+        if (data.organization) {
+          setOrgId(data.organization.id);
         }
-
-        // Update user role to agent
-        await supabase
-          .from("users")
-          .update({ role: "agent" })
-          .eq("id", userId);
       }
 
       trackEvent(EVENT_TYPES.ONBOARDING_STEP_COMPLETED, { step: 1, agency_name: agencyName, role });

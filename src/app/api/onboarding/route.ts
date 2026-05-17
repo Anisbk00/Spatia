@@ -3,7 +3,7 @@
 // POST /api/onboarding  —  Create or update onboarding state
 // ============================================
 
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { trackServerEvent, EVENT_TYPES } from "@/lib/event-tracking/server";
 import { NextRequest, NextResponse } from "next/server";
 import type { OnboardingState } from "@/lib/types";
@@ -132,9 +132,12 @@ export async function POST(request: NextRequest) {
   }
 
   // 3. Look up user's org membership if org_id not provided
+  //    Use admin client to bypass RLS on organization_members
   let orgId = body.org_id || null;
   if (!orgId) {
-    const { data: orgMembership } = await supabase
+    const adminClient = createAdminClient();
+    const dataClient = adminClient || supabase;
+    const { data: orgMembership } = await dataClient
       .from("organization_members")
       .select("org_id")
       .eq("user_id", user.id)

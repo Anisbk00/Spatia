@@ -272,7 +272,7 @@ export function SignupForm({ appOrigin }: SignupFormProps) {
       password,
       options: {
         emailRedirectTo: `${appOrigin}/auth/callback`,
-        data: { role: "agent" },
+        data: { role: "client" },
       },
     });
 
