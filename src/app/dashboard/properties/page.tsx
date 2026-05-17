@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { getUserOrganization, getOrgProperties } from "@/lib/supabase/dashboard";
 import type { PropertyRow } from "@/lib/supabase/dashboard";
 import { Button } from "@/components/ui/button";

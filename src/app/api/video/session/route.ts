@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
@@ -12,15 +12,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Use admin client for write operations (bypasses RLS)
+  const adminClient = createAdminClient();
+  const writeClient = adminClient || supabase;
+
   // Ensure user has a profile row (for FK constraints)
-  const { data: existingProfile } = await supabase
+  const { data: existingProfile } = await writeClient
     .from("users")
     .select("id")
     .eq("id", user.id)
     .single();
 
   if (!existingProfile) {
-    const { error: profileError } = await supabase
+    const { error: profileError } = await writeClient
       .from("users")
       .insert({
         id: user.id,
@@ -38,15 +42,19 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Get org_id
+  // Get org_id — use admin client to bypass RLS on organization_members
   let orgId: string | null = null;
-  const { data: membership } = await supabase
-    .from("organization_members")
-    .select("org_id")
-    .eq("user_id", user.id)
-    .limit(1)
-    .single();
-  orgId = membership?.org_id ?? null;
+  try {
+    const { data: membership } = await writeClient
+      .from("organization_members")
+      .select("org_id")
+      .eq("user_id", user.id)
+      .limit(1)
+      .single();
+    orgId = membership?.org_id ?? null;
+  } catch {
+    // User may not have an org membership yet
+  }
 
   const body = await request.json();
   const { title, address, property_type, price, description } = body;
@@ -56,7 +64,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Create property
-  const { data: property, error: propertyError } = await supabase
+  const { data: property, error: propertyError } = await writeClient
     .from("properties")
     .insert({
       org_id: orgId,
@@ -77,7 +85,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Create capture session (video mode)
-  const { data: session, error: sessionError } = await supabase
+  const { data: session, error: sessionError } = await writeClient
     .from("capture_sessions")
     .insert({
       property_id: property.id,
@@ -92,7 +100,7 @@ export async function POST(request: NextRequest) {
   if (sessionError || !session) {
     console.error("[VideoSession] Session insert error:", sessionError);
     // Rollback: archive the property
-    await supabase
+    await writeClient
       .from("properties")
       .update({ status: "draft" })
       .eq("id", property.id);

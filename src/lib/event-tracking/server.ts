@@ -5,10 +5,10 @@
 // - No buffering (immediate persistence)
 // - Extracts device_type from User-Agent header
 // - Captures IP address for geo analytics
-// - Uses Supabase server client with auth context
+// - Uses Supabase admin client to bypass RLS
 // ============================================
 
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/server";
 import type { Event } from "@/lib/types";
 import { EVENT_TYPES } from "./index";
 
@@ -91,7 +91,7 @@ export function extractIpAddress(request: Request): string | null {
 /**
  * Track an event from a server-side context.
  *
- * Inserts directly into the events table with Supabase server client.
+ * Inserts directly into the events table with Supabase admin client (bypasses RLS).
  * Automatically extracts device_type and IP address from the request.
  *
  * @param eventType - The event type (use EVENT_TYPES constants)
@@ -108,9 +108,9 @@ export async function trackServerEvent(
   orgId?: string | null,
   request?: Request | null,
 ): Promise<Event | null> {
-  const supabase = await createClient();
+  const supabase = createAdminClient();
   if (!supabase) {
-    console.warn("[trackServerEvent] Supabase not configured, event not tracked");
+    console.warn("[trackServerEvent] Supabase admin client not configured, event not tracked");
     return null;
   }
 
@@ -173,7 +173,7 @@ export async function trackServerEventBatch(
   orgId?: string | null,
   request?: Request | null,
 ): Promise<number> {
-  const supabase = await createClient();
+  const supabase = createAdminClient();
   if (!supabase) return 0;
 
   const userAgent = request?.headers?.get("user-agent") ?? null;

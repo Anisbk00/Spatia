@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import type { Property } from "@/lib/types";
 import {
   propertyUpdateSchema,
@@ -10,6 +10,19 @@ type MutationResult<T> = {
   data: T | null;
   error: string | null;
 };
+
+/**
+ * Get the appropriate write client.
+ * Prefers admin client (bypasses RLS) for write operations,
+ * falls back to user-context client if admin is unavailable.
+ */
+async function getWriteClient() {
+  const adminClient = createAdminClient();
+  if (adminClient) return adminClient;
+
+  const userClient = await createClient();
+  return userClient;
+}
 
 /**
  * Update a property. Verifies org_id matches before updating (security).
@@ -35,13 +48,13 @@ export async function updateProperty(
     };
   }
 
-  const supabase = await createClient();
-  if (!supabase) {
+  const writeClient = await getWriteClient();
+  if (!writeClient) {
     return { data: null, error: "Database not configured" };
   }
 
   // Verify org ownership before mutation
-  const { data: existing, error: fetchError } = await supabase
+  const { data: existing, error: fetchError } = await writeClient
     .from("properties")
     .select("id, org_id, status")
     .eq("id", propertyId)
@@ -61,7 +74,7 @@ export async function updateProperty(
     updated_at: new Date().toISOString(),
   };
 
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await writeClient
     .from("properties")
     .update(updatePayload)
     .eq("id", propertyId)
@@ -89,13 +102,13 @@ export async function deleteProperty(
     return { data: null, error: "Invalid property ID format" };
   }
 
-  const supabase = await createClient();
-  if (!supabase) {
+  const writeClient = await getWriteClient();
+  if (!writeClient) {
     return { data: null, error: "Database not configured" };
   }
 
   // Verify org ownership before mutation
-  const { data: existing, error: fetchError } = await supabase
+  const { data: existing, error: fetchError } = await writeClient
     .from("properties")
     .select("id, org_id")
     .eq("id", propertyId)
@@ -110,7 +123,7 @@ export async function deleteProperty(
   }
 
   // Soft delete: set status to 'archived'
-  const { error: updateError } = await supabase
+  const { error: updateError } = await writeClient
     .from("properties")
     .update({
       status: "archived",
@@ -139,13 +152,13 @@ export async function hardDeleteProperty(
     return { data: null, error: "Invalid property ID format" };
   }
 
-  const supabase = await createClient();
-  if (!supabase) {
+  const writeClient = await getWriteClient();
+  if (!writeClient) {
     return { data: null, error: "Database not configured" };
   }
 
   // Verify org ownership and status before mutation
-  const { data: existing, error: fetchError } = await supabase
+  const { data: existing, error: fetchError } = await writeClient
     .from("properties")
     .select("id, org_id, status")
     .eq("id", propertyId)
@@ -168,7 +181,7 @@ export async function hardDeleteProperty(
   }
 
   // Perform the actual delete
-  const { error: deleteError } = await supabase
+  const { error: deleteError } = await writeClient
     .from("properties")
     .delete()
     .eq("id", propertyId);

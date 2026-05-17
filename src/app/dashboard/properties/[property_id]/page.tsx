@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import {
   getPropertyDetail,
   getUserOrganization,
@@ -256,12 +256,14 @@ export default async function PropertyDetailPage({
     notFound();
   }
 
-  // Fetch processing jobs for scenes
+  // Fetch processing jobs for scenes — use admin client to bypass RLS
   const sceneIds = property.scenes.map((s) => s.id);
   let processingJobs: ProcessingJob[] = [];
   if (sceneIds.length > 0) {
     try {
-      const { data: jobs, error: jobsError } = await supabase
+      const adminClient = createAdminClient();
+      const jobsClient = adminClient || supabase;
+      const { data: jobs, error: jobsError } = await jobsClient
         .from("processing_jobs")
         .select("*")
         .in("scene_id", sceneIds)

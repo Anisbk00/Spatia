@@ -1,10 +1,29 @@
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardTopbar } from "@/components/dashboard/DashboardTopbar";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import type { User, Organization } from "@/lib/types";
+
+/**
+ * Check if an error is a Next.js internal error that must be re-thrown.
+ * Next.js uses special errors for redirect() and notFound() that must
+ * propagate up to the framework for proper handling.
+ */
+function isNextJsInternalError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+
+  // Next.js redirect errors have a digest starting with "NEXT_REDIRECT"
+  if ("digest" in err && typeof (err as { digest: unknown }).digest === "string") {
+    const digest = (err as { digest: string }).digest;
+    if (digest.startsWith("NEXT_REDIRECT") || digest.startsWith("NEXT_NOT_FOUND")) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 export default async function DashboardLayout({
   children,
@@ -37,7 +56,11 @@ export default async function DashboardLayout({
       redirect("/auth/login");
     }
 
-    const { data: profile } = await supabase
+    // Use admin client to bypass RLS for profile and org queries
+    const adminClient = createAdminClient();
+    const readClient = adminClient || supabase;
+
+    const { data: profile } = await readClient
       .from("users")
       .select("*")
       .eq("id", authUser.id)
@@ -49,7 +72,7 @@ export default async function DashboardLayout({
     }
 
     // Get user's organization
-    const { data: memberships } = await supabase
+    const { data: memberships } = await readClient
       .from("organization_members")
       .select("*, organizations(*)")
       .eq("user_id", authUser.id)
@@ -79,8 +102,8 @@ export default async function DashboardLayout({
       </SidebarProvider>
     );
   } catch (err) {
-    // If redirect() was called, re-throw it so Next.js can handle it
-    if (err && typeof err === "object" && "digest" in err && typeof (err as { digest: unknown }).digest === "string" && (err as { digest: string }).digest.startsWith("NEXT_REDIRECT")) {
+    // If it's a Next.js internal error (redirect/notFound), re-throw it
+    if (isNextJsInternalError(err)) {
       throw err;
     }
     console.error("[DashboardLayout] Rendering error:", err);

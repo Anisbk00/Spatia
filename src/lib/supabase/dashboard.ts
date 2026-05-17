@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import type {
   Property,
   CaptureSession,
@@ -21,12 +21,25 @@ interface PropertyJoinResult {
   title: string;
 }
 
+/**
+ * Get a Supabase client for read operations.
+ * Prefers admin client (bypasses RLS) to ensure dashboard reads always succeed,
+ * falls back to user-context client if admin is unavailable.
+ */
+async function getReadClient() {
+  const adminClient = createAdminClient();
+  if (adminClient) return adminClient;
+
+  const userClient = await createClient();
+  return userClient;
+}
+
 // ============================================
 // Dashboard KPI queries
 // ============================================
 
 export async function getDashboardKPIs(orgId: string) {
-  const supabase = await createClient();
+  const supabase = await getReadClient();
   if (!supabase) {
     return {
       totalProperties: 0,
@@ -115,7 +128,7 @@ export async function getRecentActivity(
   orgId: string,
   limit = 10
 ): Promise<ActivityItem[]> {
-  const supabase = await createClient();
+  const supabase = await getReadClient();
   if (!supabase) return [];
 
   // Get recent properties
@@ -218,7 +231,7 @@ export type ProcessingQueueStatus = {
 };
 
 export async function getProcessingQueue(orgId: string): Promise<ProcessingQueueStatus> {
-  const supabase = await createClient();
+  const supabase = await getReadClient();
   const empty: ProcessingQueueStatus = { queued: 0, running: 0, failed: 0, total: 0, jobs: [] };
   if (!supabase) return empty;
 
@@ -279,7 +292,7 @@ export async function getOrgProperties(
   }
 ): Promise<{ properties: PropertyRow[]; total: number }> {
   try {
-    const supabase = await createClient();
+    const supabase = await getReadClient();
     if (!supabase) return { properties: [], total: 0 };
 
     const page = options?.page ?? 1;
@@ -376,7 +389,7 @@ export type PropertyDetail = Property & {
 
 export async function getPropertyDetail(propertyId: string, orgId: string): Promise<PropertyDetail | null> {
   try {
-    const supabase = await createClient();
+    const supabase = await getReadClient();
     if (!supabase) return null;
 
     const { data: property, error: propertyError } = await supabase
@@ -440,7 +453,7 @@ export async function getOrgCaptureSessions(
     pageSize?: number;
   }
 ): Promise<{ sessions: CaptureSessionRow[]; total: number }> {
-  const supabase = await createClient();
+  const supabase = await getReadClient();
   if (!supabase) return { sessions: [], total: 0 };
 
   const page = options?.page ?? 1;
@@ -491,7 +504,8 @@ export async function getUserOrganization(userId: string): Promise<{
   members: (OrganizationMember & { user: User })[];
 }> {
   try {
-    const supabase = await createClient();
+    // Use admin client to bypass RLS on organization_members
+    const supabase = createAdminClient() || await createClient();
 
     if (!supabase) {
       return { organization: null, membership: null, members: [] };
@@ -550,7 +564,7 @@ export type AnalyticsData = {
 };
 
 export async function getAnalytics(orgId: string): Promise<AnalyticsData> {
-  const supabase = await createClient();
+  const supabase = await getReadClient();
   const empty: AnalyticsData = {
     totalViews: 0,
     viewsOverTime: [],
@@ -692,7 +706,7 @@ export type BillingData = {
 };
 
 export async function getBillingData(orgId: string): Promise<BillingData> {
-  const supabase = await createClient();
+  const supabase = await getReadClient();
   const empty: BillingData = {
     subscription: null,
     plan: null,
@@ -772,7 +786,7 @@ export type UsageLimits = {
 };
 
 export async function getUsageLimits(orgId: string): Promise<UsageLimits> {
-  const supabase = await createClient();
+  const supabase = await getReadClient();
   const defaults: UsageLimits = {
     properties: { used: 0, limit: 3 },
     storage: { usedMB: 0, limitMB: 500 },

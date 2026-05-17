@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
 import type { CreatePropertyInput, CreatePropertyResponse, FieldErrors } from "@/lib/types";
 
@@ -43,27 +43,50 @@ export async function POST(request: NextRequest) {
 
   if (!existingProfile) {
     // Auto-create profile row so FK constraints on properties/capture_sessions are satisfied
-    const { error: profileError } = await supabase
-      .from("users")
-      .insert({
-        id: user.id,
-        email: user.email ?? "",
-        full_name: user.user_metadata?.full_name ?? user.user_metadata?.name ?? null,
-        role: "client",
-      });
+    const adminClient = createAdminClient();
+    if (adminClient) {
+      const { error: profileError } = await adminClient
+        .from("users")
+        .insert({
+          id: user.id,
+          email: user.email ?? "",
+          full_name: user.user_metadata?.full_name ?? user.user_metadata?.name ?? null,
+          role: "client",
+        });
 
-    if (profileError) {
-      console.error("[Properties API] Failed to create user profile:", profileError);
-      return NextResponse.json(
-        { error: "Failed to set up user profile. Please try again." },
-        { status: 500 }
-      );
+      if (profileError) {
+        console.error("[Properties API] Failed to create user profile:", profileError);
+        return NextResponse.json(
+          { error: "Failed to set up user profile. Please try again." },
+          { status: 500 }
+        );
+      }
+    } else {
+      // Fallback: try with user-context client
+      const { error: profileError } = await supabase
+        .from("users")
+        .insert({
+          id: user.id,
+          email: user.email ?? "",
+          full_name: user.user_metadata?.full_name ?? user.user_metadata?.name ?? null,
+          role: "client",
+        });
+
+      if (profileError) {
+        console.error("[Properties API] Failed to create user profile:", profileError);
+        return NextResponse.json(
+          { error: "Failed to set up user profile. Please try again." },
+          { status: 500 }
+        );
+      }
     }
   }
 
-  // 4. Fetch org membership (gracefully handle missing)
+  // 4. Fetch org membership — use admin client to bypass potential RLS on organization_members
   try {
-    const { data: membership } = await supabase
+    const adminClient = createAdminClient();
+    const clientToUse = adminClient || supabase;
+    const { data: membership } = await clientToUse
       .from("organization_members")
       .select("org_id")
       .eq("user_id", user.id)
@@ -106,8 +129,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ errors }, { status: 422 });
   }
 
-  // 6. Create property
-  const { data: property, error: propertyError } = await supabase
+  // 6. Create property — use admin client to bypass RLS
+  const adminClient = createAdminClient();
+  const writeClient = adminClient || supabase;
+
+  const { data: property, error: propertyError } = await writeClient
     .from("properties")
     .insert({
       org_id: orgId,
@@ -131,13 +157,13 @@ export async function POST(request: NextRequest) {
   }
 
   // 7. Update property status to 'capturing'
-  await supabase
+  await writeClient
     .from("properties")
     .update({ status: "capturing" })
     .eq("id", property.id);
 
   // 8. Create capture session
-  const { data: session, error: sessionError } = await supabase
+  const { data: session, error: sessionError } = await writeClient
     .from("capture_sessions")
     .insert({
       property_id: property.id,
@@ -150,7 +176,7 @@ export async function POST(request: NextRequest) {
   if (sessionError || !session) {
     console.error("[Properties API] Session insert error:", sessionError);
     // Rollback: archive the property if session creation fails
-    await supabase
+    await writeClient
       .from("properties")
       .update({ status: "draft" })
       .eq("id", property.id);

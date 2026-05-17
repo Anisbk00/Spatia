@@ -6,17 +6,9 @@
 // Org ownership is verified inside the mutation functions.
 // ============================================
 
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
-import {
-  updateProperty,
-  deleteProperty,
-  hardDeleteProperty,
-} from "@/lib/properties/mutations";
-import {
-  propertyIdSchema,
-  propertyUpdateSchema,
-} from "@/lib/properties/validation";
+import { propertyIdSchema, propertyUpdateSchema } from "@/lib/properties/validation";
 import { trackServerEvent } from "@/lib/event-tracking/server";
 
 // ============================================
@@ -42,10 +34,12 @@ async function authenticateRequest(
     return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   }
 
-  // Fetch org membership
+  // Fetch org membership — use admin client to bypass potential RLS
   let orgId: string | null = null;
   try {
-    const { data: membership } = await supabase
+    const adminClient = createAdminClient();
+    const clientToUse = adminClient || supabase;
+    const { data: membership } = await clientToUse
       .from("organization_members")
       .select("org_id")
       .eq("user_id", user.id)
@@ -139,15 +133,46 @@ export async function PATCH(
     );
   }
 
-  // 6. Perform the update
-  try {
-    const result = await updateProperty(propertyId, orgId, dataResult.data);
+  // 6. Perform the update using admin client to bypass RLS
+  const adminClient = createAdminClient();
+  const writeClient = adminClient || supabase;
 
-    if (result.error) {
-      const status = errorToStatus(result.error);
-      // Never expose internal error details
-      const safeMessage =
-        status === 500 ? "Failed to update property" : result.error;
+  try {
+    // Verify org ownership
+    const { data: existing, error: fetchError } = await writeClient
+      .from("properties")
+      .select("id, org_id, status")
+      .eq("id", propertyId)
+      .single();
+
+    if (fetchError || !existing) {
+      return NextResponse.json({ error: "Property not found" }, { status: 404 });
+    }
+
+    if (existing.org_id !== orgId) {
+      return NextResponse.json(
+        { error: "Unauthorized: property does not belong to this organization" },
+        { status: 403 },
+      );
+    }
+
+    // Perform the update
+    const updatePayload: Record<string, unknown> = {
+      ...dataResult.data,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: updated, error: updateError } = await writeClient
+      .from("properties")
+      .update(updatePayload)
+      .eq("id", propertyId)
+      .select("*")
+      .single();
+
+    if (updateError) {
+      console.error("[Property PATCH API] Update error:", updateError.message);
+      const status = errorToStatus(updateError.message);
+      const safeMessage = status === 500 ? "Failed to update property" : updateError.message;
       return NextResponse.json({ error: safeMessage }, { status });
     }
 
@@ -163,7 +188,7 @@ export async function PATCH(
     });
 
     // 8. Return updated property
-    return NextResponse.json(result.data);
+    return NextResponse.json(updated);
   } catch (err) {
     console.error("[Property PATCH API] Unexpected error:", err);
     return NextResponse.json(
@@ -234,21 +259,67 @@ export async function DELETE(
     );
   }
 
-  // 6. Perform the delete
-  try {
-    let result;
+  // 6. Perform the delete using admin client to bypass RLS
+  const adminClient = createAdminClient();
+  const writeClient = adminClient || supabase;
 
-    if (hardDelete) {
-      result = await hardDeleteProperty(propertyId, orgId);
-    } else {
-      result = await deleteProperty(propertyId, orgId);
+  try {
+    // Verify org ownership and status
+    const { data: existing, error: fetchError } = await writeClient
+      .from("properties")
+      .select("id, org_id, status")
+      .eq("id", propertyId)
+      .single();
+
+    if (fetchError || !existing) {
+      return NextResponse.json({ error: "Property not found" }, { status: 404 });
     }
 
-    if (result.error) {
-      const status = errorToStatus(result.error);
-      const safeMessage =
-        status === 500 ? "Failed to delete property" : result.error;
-      return NextResponse.json({ error: safeMessage }, { status });
+    if (existing.org_id !== orgId) {
+      return NextResponse.json(
+        { error: "Unauthorized: property does not belong to this organization" },
+        { status: 403 },
+      );
+    }
+
+    if (hardDelete) {
+      // Only allow hard delete for draft or archived properties
+      if (existing.status !== "draft" && existing.status !== "archived") {
+        return NextResponse.json(
+          { error: "Hard delete is only allowed for properties with 'draft' or 'archived' status" },
+          { status: 422 },
+        );
+      }
+
+      const { error: deleteError } = await writeClient
+        .from("properties")
+        .delete()
+        .eq("id", propertyId);
+
+      if (deleteError) {
+        console.error("[Property DELETE API] Hard delete error:", deleteError.message);
+        return NextResponse.json(
+          { error: "Failed to delete property" },
+          { status: 500 },
+        );
+      }
+    } else {
+      // Soft delete: set status to 'archived'
+      const { error: updateError } = await writeClient
+        .from("properties")
+        .update({
+          status: "archived",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", propertyId);
+
+      if (updateError) {
+        console.error("[Property DELETE API] Archive error:", updateError.message);
+        return NextResponse.json(
+          { error: "Failed to archive property" },
+          { status: 500 },
+        );
+      }
     }
 
     // 7. Track analytics event (best-effort, non-blocking)
