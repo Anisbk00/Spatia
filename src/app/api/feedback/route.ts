@@ -5,7 +5,7 @@
 // validates auth, inserts into feedback_events, and tracks events.
 // ============================================
 
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { trackServerEvent, EVENT_TYPES } from "@/lib/event-tracking/server";
 import { NextRequest, NextResponse } from "next/server";
 import type { FeedbackType, FeedbackSentiment } from "@/lib/types";
@@ -47,6 +47,9 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
 
   // 2. Parse and validate request body
   let body: FeedbackRequest;
@@ -95,7 +98,7 @@ export async function POST(request: NextRequest) {
   }
 
   // 3. Look up user's org membership
-  const { data: orgMembership } = await supabase
+  const { data: orgMembership } = await dataClient
     .from("organization_members")
     .select("org_id")
     .eq("user_id", user.id)
@@ -116,7 +119,7 @@ export async function POST(request: NextRequest) {
     metadata: body.metadata || {},
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await dataClient
     .from("feedback_events")
     .insert(insertData)
     .select("id")

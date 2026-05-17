@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,7 +16,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Look up the invitation
-    const { data: invitation, error: inviteError } = await supabase
+    const adminClient = createAdminClient();
+    const dataClient = adminClient || supabase;
+
+    const { data: invitation, error: inviteError } = await dataClient
       .from("invitations")
       .select("id, org_id, email, role, status, expires_at")
       .eq("token", token)
@@ -36,7 +39,7 @@ export async function POST(request: NextRequest) {
 
     if (new Date(invitation.expires_at) < new Date()) {
       // Mark as expired
-      await supabase
+      await dataClient
         .from("invitations")
         .update({ status: "expired" })
         .eq("id", invitation.id);
@@ -61,7 +64,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if already a member
-    const { data: existingMember } = await supabase
+    const { data: existingMember } = await dataClient
       .from("organization_members")
       .select("id")
       .eq("org_id", invitation.org_id)
@@ -70,7 +73,7 @@ export async function POST(request: NextRequest) {
 
     if (existingMember) {
       // Mark invitation as accepted
-      await supabase
+      await dataClient
         .from("invitations")
         .update({ status: "accepted", accepted_at: new Date().toISOString(), accepted_by: user.id })
         .eq("id", invitation.id);
@@ -78,7 +81,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Add user as a member
-    const { error: insertError } = await supabase
+    const { error: insertError } = await dataClient
       .from("organization_members")
       .insert({
         org_id: invitation.org_id,
@@ -92,7 +95,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Mark invitation as accepted
-    await supabase
+    await dataClient
       .from("invitations")
       .update({
         status: "accepted",

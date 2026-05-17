@@ -2,7 +2,7 @@
 // /api/uploads — CRUD for upload_operations table
 // ============================================
 
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
 
 // Supabase join result type
@@ -32,6 +32,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // 2. Parse body
   const body = await request.json();
   const { sessionId, propertyId, fileName, fileSize, contentType, orgId } = body as {
@@ -51,7 +54,7 @@ export async function POST(request: NextRequest) {
   }
 
   // 3. Verify user is agent/admin of the org that owns the property
-  const { data: profile } = await supabase
+  const { data: profile } = await dataClient
     .from("users")
     .select("role")
     .eq("id", user.id)
@@ -62,7 +65,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Verify session belongs to user's org
-  const { data: session } = await supabase
+  const { data: session } = await dataClient
     .from("capture_sessions")
     .select("id, property_id, properties!inner(org_id)")
     .eq("id", sessionId)
@@ -78,7 +81,7 @@ export async function POST(request: NextRequest) {
   // Verify org membership
   const sessionOrgId = (session.properties as unknown as PropertyOrgJoinResult)?.org_id;
   if (sessionOrgId) {
-    const { data: membership } = await supabase
+    const { data: membership } = await dataClient
       .from("organization_members")
       .select("org_id, role")
       .eq("user_id", user.id)
@@ -99,7 +102,7 @@ export async function POST(request: NextRequest) {
 
   // 4. Create upload_operation record
   const now = new Date().toISOString();
-  const { data: operation, error: insertError } = await supabase
+  const { data: operation, error: insertError } = await dataClient
     .from("upload_operations")
     .insert({
       org_id: orgId ?? sessionOrgId ?? null,
@@ -156,6 +159,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // 2. Get query params
   const { searchParams } = new URL(request.url);
   const sessionId = searchParams.get("sessionId");
@@ -169,7 +175,7 @@ export async function GET(request: NextRequest) {
   }
 
   // 3. Verify user has access
-  const { data: profile } = await supabase
+  const { data: profile } = await dataClient
     .from("users")
     .select("role")
     .eq("id", user.id)
@@ -181,7 +187,7 @@ export async function GET(request: NextRequest) {
 
   // Verify session belongs to user's org
   if (sessionId) {
-    const { data: session } = await supabase
+    const { data: session } = await dataClient
       .from("capture_sessions")
       .select("id, properties!inner(org_id)")
       .eq("id", sessionId)
@@ -196,7 +202,7 @@ export async function GET(request: NextRequest) {
 
     const sessionOrgId = (session.properties as unknown as PropertyOrgJoinResult)?.org_id;
     if (sessionOrgId) {
-      const { data: membership } = await supabase
+      const { data: membership } = await dataClient
         .from("organization_members")
         .select("org_id")
         .eq("user_id", user.id)
@@ -213,7 +219,7 @@ export async function GET(request: NextRequest) {
   }
 
   // 4. Fetch upload operations
-  let query = supabase
+  let query = dataClient
     .from("upload_operations")
     .select("*")
     .order("created_at", { ascending: true });
@@ -260,6 +266,9 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // 2. Parse body
   const body = await request.json();
   const {
@@ -290,7 +299,7 @@ export async function PATCH(request: NextRequest) {
   }
 
   // 3. Verify user owns this operation or is admin
-  const { data: operation } = await supabase
+  const { data: operation } = await dataClient
     .from("upload_operations")
     .select("id, user_id, org_id, session_id")
     .eq("id", operationId)
@@ -308,7 +317,7 @@ export async function PATCH(request: NextRequest) {
   let isAdmin = false;
 
   if (!isOwner && operation.org_id) {
-    const { data: membership } = await supabase
+    const { data: membership } = await dataClient
       .from("organization_members")
       .select("role")
       .eq("user_id", user.id)
@@ -318,7 +327,7 @@ export async function PATCH(request: NextRequest) {
   }
 
   if (!isOwner && !isAdmin) {
-    const { data: profile } = await supabase
+    const { data: profile } = await dataClient
       .from("users")
       .select("role")
       .eq("id", user.id)
@@ -342,7 +351,7 @@ export async function PATCH(request: NextRequest) {
   if (storagePath !== undefined) update.storage_path = storagePath;
 
   // 5. Apply update
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await dataClient
     .from("upload_operations")
     .update(update)
     .eq("id", operationId)

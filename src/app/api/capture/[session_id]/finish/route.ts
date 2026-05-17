@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(
@@ -21,8 +21,12 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Use admin client for data operations (bypasses RLS)
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // 2. Verify session exists and belongs to user
-  const { data: session } = await supabase
+  const { data: session } = await dataClient
     .from("capture_sessions")
     .select("*, properties!inner(org_id)")
     .eq("id", session_id)
@@ -33,7 +37,7 @@ export async function POST(
   }
 
   // Verify user is agent/admin of the org
-  const { data: profile } = await supabase
+  const { data: profile } = await dataClient
     .from("users")
     .select("role")
     .eq("id", user.id)
@@ -44,7 +48,7 @@ export async function POST(
   }
 
   // 3. Update session status → 'processing'
-  const { error: sessionError } = await supabase
+  const { error: sessionError } = await dataClient
     .from("capture_sessions")
     .update({
       status: "processing",
@@ -61,13 +65,13 @@ export async function POST(
   }
 
   // 4. Update property status → 'processing'
-  await supabase
+  await dataClient
     .from("properties")
     .update({ status: "processing" })
     .eq("id", session.property_id);
 
   // 5. Create scene record
-  const { data: scene, error: sceneError } = await supabase
+  const { data: scene, error: sceneError } = await dataClient
     .from("scenes")
     .insert({
       property_id: session.property_id,
@@ -86,7 +90,7 @@ export async function POST(
   }
 
   // 6. Create processing job: SfM reconstruction
-  const { error: jobError } = await supabase
+  const { error: jobError } = await dataClient
     .from("processing_jobs")
     .insert({
       scene_id: scene.id,

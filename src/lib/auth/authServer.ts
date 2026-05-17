@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import type { User, Session } from "@supabase/supabase-js";
 import type {
   User as PublicUser,
@@ -86,6 +86,7 @@ export async function requireAuth(): Promise<User | null> {
  * a public.users row, which causes FK constraint violations on
  * properties, capture_sessions, etc.
  *
+ * Uses admin client to bypass RLS.
  * Returns the created profile or error.
  */
 export async function createUserProfile(
@@ -94,7 +95,8 @@ export async function createUserProfile(
   role: UserRole = "client",
 ): Promise<ServerAuthResult<PublicUser | null>> {
   try {
-    const supabase = await createClient();
+    const adminClient = createAdminClient();
+    const supabase = adminClient || await createClient();
     if (!supabase) {
       return { data: null, error: "auth.errorServiceNotConfigured" };
     }
@@ -129,6 +131,7 @@ export async function createUserProfile(
  * If the profile doesn't exist, it will be created with the given
  * email and a default "client" role.
  *
+ * Uses admin client to bypass RLS.
  * This is the safe way to ensure FK constraints are satisfied
  * before inserting into properties, capture_sessions, etc.
  */
@@ -137,7 +140,8 @@ export async function ensureUserProfile(
   email: string,
 ): Promise<ServerAuthResult<PublicUser | null>> {
   try {
-    const supabase = await createClient();
+    const adminClient = createAdminClient();
+    const supabase = adminClient || await createClient();
     if (!supabase) {
       return { data: null, error: "auth.errorServiceNotConfigured" };
     }
@@ -197,6 +201,8 @@ export async function ensureUserProfile(
  * Initialize or return existing onboarding state for a user.
  * If the user has no onboarding_state row, one is created.
  *
+ * Uses admin client to bypass RLS on organization_members and onboarding_state.
+ *
  * @param userId — The authenticated user's ID
  * @param orgId — Optional org ID to associate with the onboarding state
  */
@@ -205,12 +211,13 @@ export async function upsertOnboardingState(
   orgId?: string,
 ): Promise<ServerAuthResult<OnboardingState | null>> {
   try {
-    const supabase = await createClient();
+    const adminClient = createAdminClient();
+    const supabase = adminClient || await createClient();
     if (!supabase) {
       return { data: null, error: "auth.errorServiceNotConfigured" };
     }
 
-    // Resolve org_id if not provided
+    // Resolve org_id if not provided — use admin client to bypass RLS on organization_members
     let resolvedOrgId = orgId ?? null;
     if (!resolvedOrgId) {
       const { data: membership } = await supabase

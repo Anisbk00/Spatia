@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(request: NextRequest) {
@@ -14,8 +14,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "session_id is required" }, { status: 400 });
   }
 
+  // Use admin client for data operations (bypasses RLS)
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // Get capture session
-  const { data: session, error: sessionError } = await supabase
+  const { data: session, error: sessionError } = await dataClient
     .from("capture_sessions")
     .select("id, property_id, status, capture_type")
     .eq("id", session_id)
@@ -26,7 +30,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Get video capture info
-  const { data: videoCaptures } = await supabase
+  const { data: videoCaptures } = await dataClient
     .from("video_captures")
     .select("id, status, duration_seconds, extracted_frame_count, metadata")
     .eq("session_id", session_id)
@@ -36,7 +40,7 @@ export async function GET(request: NextRequest) {
   const videoCapture = videoCaptures?.[0];
 
   // Get scene
-  const { data: scenes } = await supabase
+  const { data: scenes } = await dataClient
     .from("scenes")
     .select("id, status, quality_score, model_url, thumbnail_url")
     .eq("session_id", session_id)
@@ -48,7 +52,7 @@ export async function GET(request: NextRequest) {
   // Get processing jobs
   let jobs: Array<{ id: string; job_type: string; status: string; logs: string | null }> = [];
   if (scene) {
-    const { data: jobData } = await supabase
+    const { data: jobData } = await dataClient
       .from("processing_jobs")
       .select("id, job_type, status, logs")
       .eq("scene_id", scene.id)

@@ -19,34 +19,24 @@ export default async function FirstPropertyOnboardingPage() {
 
   const userId = user.id;
 
-  // Use admin client to check role (bypasses RLS)
-  const admin = createAdminClient();
-  const checkClient = admin || supabase;
+  // Use admin client for all data operations (bypasses RLS)
+  const adminClient = createAdminClient();
+  const readClient = adminClient || supabase;
 
   // Check user role — clients don't need to create properties
-  let userRole = "client";
-  if (admin) {
-    const { data: profile } = await admin
-      .from("users")
-      .select("role")
-      .eq("id", userId)
-      .single();
-    userRole = profile?.role || "client";
-  } else {
-    const { data: profile } = await supabase
-      .from("users")
-      .select("role")
-      .eq("id", userId)
-      .single();
-    userRole = profile?.role || "client";
-  }
+  const { data: profile } = await readClient
+    .from("users")
+    .select("role")
+    .eq("id", userId)
+    .single();
+  const userRole = profile?.role || "client";
 
   if (userRole === "client") {
     redirect("/onboarding/tutorial");
   }
 
   // Get org membership — required before creating a property
-  const { data: membership } = await checkClient
+  const { data: membership } = await readClient
     .from("organization_members")
     .select("org_id")
     .eq("user_id", userId)
@@ -60,7 +50,7 @@ export default async function FirstPropertyOnboardingPage() {
   const orgId = membership.org_id;
 
   // Check onboarding state — if already completed, redirect based on role
-  const { data: onboardingState } = await checkClient
+  const { data: onboardingState } = await readClient
     .from("onboarding_state")
     .select("is_completed")
     .eq("user_id", userId)

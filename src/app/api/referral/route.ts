@@ -3,7 +3,7 @@
 // POST /api/referral  —  Track referral signup
 // ============================================
 
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { trackServerEvent, EVENT_TYPES } from "@/lib/event-tracking/server";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -56,8 +56,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // 2. Look up user's org membership
-  const { data: orgMembership } = await supabase
+  const { data: orgMembership } = await dataClient
     .from("organization_members")
     .select("org_id")
     .eq("user_id", user.id)
@@ -74,7 +77,7 @@ export async function GET(request: NextRequest) {
   const orgId = orgMembership.org_id;
 
   // 3. Get org with referral code
-  const { data: org, error: orgError } = await supabase
+  const { data: org, error: orgError } = await dataClient
     .from("organizations")
     .select("id, referral_code")
     .eq("id", orgId)
@@ -100,7 +103,7 @@ export async function GET(request: NextRequest) {
       const candidateCode = generateReferralCode();
 
       // Check for uniqueness
-      const { data: existing } = await supabase
+      const { data: existing } = await dataClient
         .from("organizations")
         .select("id")
         .eq("referral_code", candidateCode)
@@ -123,7 +126,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Update the org with the new referral code
-    const { error: updateError } = await supabase
+    const { error: updateError } = await dataClient
       .from("organizations")
       .update({ referral_code: referralCode })
       .eq("id", orgId);
@@ -147,7 +150,7 @@ export async function GET(request: NextRequest) {
   }
 
   // 5. Count how many referrals this org has
-  const { count: referralCount } = await supabase
+  const { count: referralCount } = await dataClient
     .from("referrals")
     .select("id", { count: "exact", head: true })
     .eq("referrer_org_id", orgId);
@@ -191,6 +194,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // 2. Parse and validate request body
   let body: ReferralSignupRequest;
   try {
@@ -211,7 +217,7 @@ export async function POST(request: NextRequest) {
   }
 
   // 3. Look up the referral code in organizations table
-  const { data: referrerOrg, error: referrerError } = await supabase
+  const { data: referrerOrg, error: referrerError } = await dataClient
     .from("organizations")
     .select("id, referral_code")
     .eq("referral_code", body.referral_code)
@@ -225,7 +231,7 @@ export async function POST(request: NextRequest) {
   }
 
   // 4. Prevent self-referral
-  const { data: userOrgMembership } = await supabase
+  const { data: userOrgMembership } = await dataClient
     .from("organization_members")
     .select("org_id")
     .eq("user_id", user.id)
@@ -240,7 +246,7 @@ export async function POST(request: NextRequest) {
   }
 
   // 5. Check for duplicate referral (same user already referred)
-  const { data: existingReferral } = await supabase
+  const { data: existingReferral } = await dataClient
     .from("referrals")
     .select("id")
     .eq("referred_user_id", user.id)
@@ -254,7 +260,7 @@ export async function POST(request: NextRequest) {
   }
 
   // 6. Create a referral record
-  const { error: insertError } = await supabase
+  const { error: insertError } = await dataClient
     .from("referrals")
     .insert({
       referral_code: body.referral_code,

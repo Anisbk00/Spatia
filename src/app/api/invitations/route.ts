@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { randomBytes } from "crypto";
 
 function generateInvitationToken(): string {
@@ -18,6 +18,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
+    const adminClient = createAdminClient();
+    const dataClient = adminClient || supabase;
+
     const body = await request.json();
     const { email, role, orgId } = body;
 
@@ -32,7 +35,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify the inviter is a member of the org with owner/agent role
-    const { data: membership } = await supabase
+    const { data: membership } = await dataClient
       .from("organization_members")
       .select("role")
       .eq("org_id", orgId)
@@ -44,7 +47,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check for existing pending invitation to this email for this org
-    const { data: existingInvitation } = await supabase
+    const { data: existingInvitation } = await dataClient
       .from("invitations")
       .select("id, status, expires_at")
       .eq("org_id", orgId)
@@ -62,14 +65,14 @@ export async function POST(request: NextRequest) {
         );
       }
       // Expired — mark it and create a new one
-      await supabase
+      await dataClient
         .from("invitations")
         .update({ status: "expired" })
         .eq("id", existingInvitation.id);
     }
 
     // Check if user already exists
-    const { data: existingUser } = await supabase
+    const { data: existingUser } = await dataClient
       .from("users")
       .select("id")
       .eq("email", email)
@@ -77,7 +80,7 @@ export async function POST(request: NextRequest) {
 
     if (existingUser) {
       // Check if already a member
-      const { data: existingMember } = await supabase
+      const { data: existingMember } = await dataClient
         .from("organization_members")
         .select("id")
         .eq("org_id", orgId)
@@ -89,7 +92,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Add existing user as member directly
-      const { error: insertError } = await supabase
+      const { error: insertError } = await dataClient
         .from("organization_members")
         .insert({
           org_id: orgId,
@@ -106,7 +109,7 @@ export async function POST(request: NextRequest) {
 
     // User doesn't exist yet — create invitation
     const token = generateInvitationToken();
-    const { data: invitation, error: inviteError } = await supabase
+    const { data: invitation, error: inviteError } = await dataClient
       .from("invitations")
       .insert({
         org_id: orgId,
@@ -157,6 +160,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
+    const adminClient = createAdminClient();
+    const dataClient = adminClient || supabase;
+
     const { searchParams } = new URL(request.url);
     const orgId = searchParams.get("orgId");
 
@@ -165,7 +171,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Verify the user is a member of the org
-    const { data: membership } = await supabase
+    const { data: membership } = await dataClient
       .from("organization_members")
       .select("role")
       .eq("org_id", orgId)
@@ -176,7 +182,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Not a member of this organization" }, { status: 403 });
     }
 
-    const { data: invitations, error } = await supabase
+    const { data: invitations, error } = await dataClient
       .from("invitations")
       .select("id, email, role, status, expires_at, accepted_at, created_at")
       .eq("org_id", orgId)

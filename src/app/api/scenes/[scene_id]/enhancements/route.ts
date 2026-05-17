@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { getAIEnhancementPipeline } from "@/lib/ai-enhancement";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -17,8 +17,11 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
   const { scene_id } = await context.params;
 
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // Check if scene exists and its status
-  const { data: scene } = await supabase
+  const { data: scene } = await dataClient
     .from("scenes")
     .select("id, property_id, status")
     .eq("id", scene_id)
@@ -35,14 +38,14 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
   if (user) {
     // Get property's org
-    const { data: property } = await supabase
+    const { data: property } = await dataClient
       .from("properties")
       .select("org_id")
       .eq("id", scene.property_id)
       .single();
 
     if (property?.org_id) {
-      const { data: membership } = await supabase
+      const { data: membership } = await dataClient
         .from("organization_members")
         .select("id")
         .eq("org_id", property.org_id)

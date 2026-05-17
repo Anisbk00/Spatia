@@ -19,30 +19,20 @@ export default async function TutorialOnboardingPage() {
 
   const userId = user.id;
 
-  // Use admin client to check role (bypasses RLS)
-  const admin = createAdminClient();
+  // Use admin client for all data operations (bypasses RLS)
+  const adminClient = createAdminClient();
+  const readClient = adminClient || supabase;
 
   // Check user role for role-specific tutorial content
-  let userRole = "client";
-  if (admin) {
-    const { data: profile } = await admin
-      .from("users")
-      .select("role")
-      .eq("id", userId)
-      .single();
-    userRole = profile?.role || "client";
-  } else {
-    const { data: profile } = await supabase
-      .from("users")
-      .select("role")
-      .eq("id", userId)
-      .single();
-    userRole = profile?.role || "client";
-  }
+  const { data: profile } = await readClient
+    .from("users")
+    .select("role")
+    .eq("id", userId)
+    .single();
+  const userRole = profile?.role || "client";
 
   // Check onboarding state — if already completed, redirect based on role
-  const checkClient = admin || supabase;
-  const { data: onboardingState } = await checkClient
+  const { data: onboardingState } = await readClient
     .from("onboarding_state")
     .select("is_completed")
     .eq("user_id", userId)

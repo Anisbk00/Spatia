@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
 
 /**
@@ -19,8 +19,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "session_id is required" }, { status: 400 });
   }
 
+  // Use admin client for data operations (bypasses RLS)
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // Fetch session status
-  const { data: session } = await supabase
+  const { data: session } = await dataClient
     .from("capture_sessions")
     .select("id, status, total_images, property_id")
     .eq("id", sessionId)
@@ -31,7 +35,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Fetch scene
-  const { data: scene } = await supabase
+  const { data: scene } = await dataClient
     .from("scenes")
     .select("id, status, model_url, thumbnail_url, quality_score, processing_time_seconds")
     .eq("session_id", sessionId)
@@ -41,7 +45,7 @@ export async function GET(request: NextRequest) {
   // Fetch processing jobs for this scene
   let jobs: Array<{ id: string; job_type: string; status: string; started_at: string | null; finished_at: string | null; retry_count: number }> = [];
   if (scene) {
-    const { data: jobData } = await supabase
+    const { data: jobData } = await dataClient
       .from("processing_jobs")
       .select("id, job_type, status, started_at, finished_at, retry_count")
       .eq("scene_id", scene.id)

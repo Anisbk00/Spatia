@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
 
 /**
@@ -17,6 +17,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Use admin client for data operations (bypasses RLS)
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   const body = await request.json();
   const { session_id } = body as { session_id?: string };
 
@@ -25,7 +29,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Verify session exists and belongs to user's org
-  const { data: session } = await supabase
+  const { data: session } = await dataClient
     .from("capture_sessions")
     .select("*, properties!inner(org_id)")
     .eq("id", session_id)
@@ -36,7 +40,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Verify agent/admin role
-  const { data: profile } = await supabase
+  const { data: profile } = await dataClient
     .from("users")
     .select("role")
     .eq("id", user.id)
@@ -47,7 +51,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Check if a scene already exists for this session
-  const { data: existingScene } = await supabase
+  const { data: existingScene } = await dataClient
     .from("scenes")
     .select("id, status")
     .eq("session_id", session_id)
@@ -58,7 +62,7 @@ export async function POST(request: NextRequest) {
 
   if (!sceneId) {
     // Create scene
-    const { data: newScene, error: sceneError } = await supabase
+    const { data: newScene, error: sceneError } = await dataClient
       .from("scenes")
       .insert({
         property_id: session.property_id,
@@ -78,7 +82,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Check if a job already exists for this scene
-  const { data: existingJob } = await supabase
+  const { data: existingJob } = await dataClient
     .from("processing_jobs")
     .select("id, status")
     .eq("scene_id", sceneId)
@@ -95,7 +99,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Create processing job
-  const { data: job, error: jobError } = await supabase
+  const { data: job, error: jobError } = await dataClient
     .from("processing_jobs")
     .insert({
       scene_id: sceneId,
@@ -113,12 +117,12 @@ export async function POST(request: NextRequest) {
   }
 
   // Update session and property status
-  await supabase
+  await dataClient
     .from("capture_sessions")
     .update({ status: "processing" })
     .eq("id", session_id);
 
-  await supabase
+  await dataClient
     .from("properties")
     .update({ status: "processing" })
     .eq("id", session.property_id);

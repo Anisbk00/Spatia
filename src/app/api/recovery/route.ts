@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { RecoveryService, DataIntegrityChecker, OrphanDetector } from "@/lib/pipeline-recovery";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -24,8 +24,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // Verify agent/admin role
-  const { data: profile } = await supabase
+  const { data: profile } = await dataClient
     .from("users")
     .select("role")
     .eq("id", user.id)

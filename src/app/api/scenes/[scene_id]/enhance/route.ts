@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { getAIEnhancementPipeline } from "@/lib/ai-enhancement";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -20,6 +20,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
 
   const { scene_id } = await context.params;
 
@@ -47,7 +50,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
   }
 
   // Look up scene and verify ownership via org membership
-  const { data: scene, error: sceneError } = await supabase
+  const { data: scene, error: sceneError } = await dataClient
     .from("scenes")
     .select("id, property_id, status")
     .eq("id", scene_id)
@@ -58,7 +61,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
   }
 
   // Get the property's org_id
-  const { data: property } = await supabase
+  const { data: property } = await dataClient
     .from("properties")
     .select("org_id")
     .eq("id", scene.property_id)
@@ -69,7 +72,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
   }
 
   // Verify user is a member of the org
-  const { data: membership } = await supabase
+  const { data: membership } = await dataClient
     .from("organization_members")
     .select("role")
     .eq("org_id", property.org_id)

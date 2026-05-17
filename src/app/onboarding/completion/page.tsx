@@ -21,30 +21,20 @@ export default async function CompletionOnboardingPage() {
   const userId = user.id;
   const userEmail = user.email ?? "";
 
-  // Use admin client to bypass RLS
-  const admin = createAdminClient();
-  const checkClient = admin || supabase;
+  // Use admin client for all data operations (bypasses RLS)
+  const adminClient = createAdminClient();
+  const readClient = adminClient || supabase;
 
   // Check user role for role-specific completion content
-  let userRole = "client";
-  if (admin) {
-    const { data: profile } = await admin
-      .from("users")
-      .select("role")
-      .eq("id", userId)
-      .single();
-    userRole = profile?.role || "client";
-  } else {
-    const { data: profile } = await supabase
-      .from("users")
-      .select("role")
-      .eq("id", userId)
-      .single();
-    userRole = profile?.role || "client";
-  }
+  const { data: profile } = await readClient
+    .from("users")
+    .select("role")
+    .eq("id", userId)
+    .single();
+  const userRole = profile?.role || "client";
 
   // Get full onboarding state
-  const { data: onboardingState } = await checkClient
+  const { data: onboardingState } = await readClient
     .from("onboarding_state")
     .select("*")
     .eq("user_id", userId)
@@ -57,7 +47,7 @@ export default async function CompletionOnboardingPage() {
   }
 
   // Get org membership for context
-  const { data: membership } = await checkClient
+  const { data: membership } = await readClient
     .from("organization_members")
     .select("org_id")
     .eq("user_id", userId)

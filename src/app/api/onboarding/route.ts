@@ -42,8 +42,10 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // 2. Look up onboarding state
-  const { data: onboardingState, error } = await supabase
+  // 2. Look up onboarding state — use admin client to bypass RLS
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+  const { data: onboardingState, error } = await dataClient
     .from("onboarding_state")
     .select("*")
     .eq("user_id", user.id)
@@ -147,8 +149,10 @@ export async function POST(request: NextRequest) {
     orgId = orgMembership?.org_id || null;
   }
 
-  // 4. Check if onboarding state already exists
-  const { data: existingState } = await supabase
+  // 4. Check if onboarding state already exists — use admin client to bypass RLS
+  const adminForUpsert = createAdminClient();
+  const upsertClient = adminForUpsert || supabase;
+  const { data: existingState } = await upsertClient
     .from("onboarding_state")
     .select("*")
     .eq("user_id", user.id)
@@ -173,8 +177,8 @@ export async function POST(request: NextRequest) {
     upsertData.skipped = body.skipped;
   }
 
-  // 6. Upsert into onboarding_state table
-  const { data: upsertedState, error: upsertError } = await supabase
+  // 6. Upsert into onboarding_state table — use admin client to bypass RLS
+  const { data: upsertedState, error: upsertError } = await upsertClient
     .from("onboarding_state")
     .upsert(upsertData, {
       onConflict: "user_id",

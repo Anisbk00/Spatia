@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
@@ -12,6 +12,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Use admin client for data operations (bypasses RLS)
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   const body = await request.json();
   const { session_id, property_id, video_capture_id, storage_path, duration_seconds, width, height } = body;
 
@@ -20,7 +24,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Verify the file exists in storage
-  const { data: fileData, error: fileError } = await supabase.storage
+  const { data: fileData, error: fileError } = await dataClient.storage
     .from("property-captures")
     .list(`video-captures/${session_id}`);
 
@@ -30,7 +34,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Update video_captures with metadata
-  const { error: vcUpdateError } = await supabase
+  const { error: vcUpdateError } = await dataClient
     .from("video_captures")
     .update({
       status: "extracting",
@@ -46,7 +50,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Update capture_sessions → processing
-  const { error: sessionError } = await supabase
+  const { error: sessionError } = await dataClient
     .from("capture_sessions")
     .update({ status: "processing" })
     .eq("id", session_id);
@@ -56,13 +60,13 @@ export async function POST(request: NextRequest) {
   }
 
   // Update properties → processing
-  await supabase
+  await dataClient
     .from("properties")
     .update({ status: "processing" })
     .eq("id", property_id);
 
   // Create or get scene
-  const { data: existingScene } = await supabase
+  const { data: existingScene } = await dataClient
     .from("scenes")
     .select("id")
     .eq("session_id", session_id)
@@ -72,7 +76,7 @@ export async function POST(request: NextRequest) {
   let sceneId = existingScene?.id;
 
   if (!sceneId) {
-    const { data: newScene, error: sceneError } = await supabase
+    const { data: newScene, error: sceneError } = await dataClient
       .from("scenes")
       .insert({
         property_id,
@@ -90,7 +94,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Create processing job — frame_extraction is the first step
-  const { data: job, error: jobError } = await supabase
+  const { data: job, error: jobError } = await dataClient
     .from("processing_jobs")
     .insert({
       scene_id: sceneId,
