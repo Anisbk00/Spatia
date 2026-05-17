@@ -19,7 +19,7 @@ import { Camera, Loader2, Video } from "lucide-react";
 import type { PropertyType, FieldErrors } from "@/lib/types";
 
 interface CreatePropertyFormProps {
-  orgId: string;
+  orgId: string | null;
   orgRole: string;
   isVideoMode: boolean;
 }

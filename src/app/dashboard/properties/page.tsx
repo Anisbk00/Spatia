@@ -154,26 +154,15 @@ export default async function PropertiesPage({
 
   // Get user's organization
   const { organization } = await getUserOrganization(user.id);
-  if (!organization) {
-    return (
-      <div className="flex min-h-[60vh] items-center justify-center p-4">
-        <div className="text-center space-y-2">
-          <h2 className="text-lg font-semibold">{tc("noOrganization")}</h2>
-          <p className="text-sm text-muted-foreground">
-            You are not part of any organization.
-          </p>
-        </div>
-      </div>
-    );
-  }
 
-  // Fetch properties with filters
-  const { properties, total } = await getOrgProperties(organization.id, {
+  // Fetch properties — use org_id if available, otherwise fall back to created_by
+  const { properties, total } = await getOrgProperties(organization?.id ?? null, {
     status,
     propertyType,
     search,
     page,
     pageSize: PAGE_SIZE,
+    userId: organization ? undefined : user.id,
   });
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));

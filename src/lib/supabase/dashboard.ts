@@ -281,14 +281,19 @@ export type PropertyRow = Property & {
   view_count: number;
 };
 
+/**
+ * Get properties for an organization. Falls back to querying by user ID
+ * if no orgId is provided (for buyers without an org).
+ */
 export async function getOrgProperties(
-  orgId: string,
+  orgId: string | null,
   options?: {
     status?: string;
     propertyType?: string;
     search?: string;
     page?: number;
     pageSize?: number;
+    userId?: string; // fallback for users without an org
   }
 ): Promise<{ properties: PropertyRow[]; total: number }> {
   try {
@@ -303,9 +308,17 @@ export async function getOrgProperties(
     let query = supabase
       .from("properties")
       .select("*", { count: "exact" })
-      .eq("org_id", orgId)
       .order("updated_at", { ascending: false })
       .range(from, to);
+
+    // Filter by org_id or created_by depending on what's available
+    if (orgId) {
+      query = query.eq("org_id", orgId);
+    } else if (options?.userId) {
+      query = query.eq("created_by", options.userId);
+    } else {
+      return { properties: [], total: 0 };
+    }
 
     if (options?.status) {
       query = query.eq("status", options.status);
@@ -387,17 +400,24 @@ export type PropertyDetail = Property & {
   view_count: number;
 };
 
-export async function getPropertyDetail(propertyId: string, orgId: string): Promise<PropertyDetail | null> {
+export async function getPropertyDetail(propertyId: string, orgId: string | null, userId?: string): Promise<PropertyDetail | null> {
   try {
     const supabase = await getReadClient();
     if (!supabase) return null;
 
-    const { data: property, error: propertyError } = await supabase
+    // Build query — filter by org_id if available, otherwise by created_by
+    let query = supabase
       .from("properties")
       .select("*")
-      .eq("id", propertyId)
-      .eq("org_id", orgId)
-      .single();
+      .eq("id", propertyId);
+
+    if (orgId) {
+      query = query.eq("org_id", orgId);
+    } else if (userId) {
+      query = query.eq("created_by", userId);
+    }
+
+    const { data: property, error: propertyError } = await query.single();
 
     if (propertyError || !property) return null;
 

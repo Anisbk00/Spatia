@@ -67,25 +67,7 @@ export default async function DashboardNewPropertyPage({
     console.error("[NewPropertyPage] Failed to get organization:", err);
   }
 
-  if (!organization) {
-    return (
-      <div className="flex min-h-[60vh] items-center justify-center p-4">
-        <div className="text-center space-y-4">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-muted">
-            <ArrowLeft className="h-8 w-8 text-muted-foreground" />
-          </div>
-          <h2 className="text-lg font-semibold">{tc("noOrganization")}</h2>
-          <p className="text-sm text-muted-foreground max-w-sm">
-            {tc("noOrganizationDesc")}
-          </p>
-          <Button asChild>
-            <a href="/onboarding">{tc("createOrganization")}</a>
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
+  const orgId = organization?.id ?? null;
   const orgRole = (membership as { role: string } | null)?.role ?? "agent";
 
   return (
@@ -117,7 +99,7 @@ export default async function DashboardNewPropertyPage({
         </CardHeader>
         <CardContent>
           <CreatePropertyForm
-            orgId={organization.id}
+            orgId={orgId}
             orgRole={orgRole}
             isVideoMode={isVideoMode}
           />

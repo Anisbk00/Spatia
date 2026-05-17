@@ -264,19 +264,27 @@ export default async function DashboardPage() {
   // Get user's organization
   const { organization } = await getUserOrganization(user.id);
 
-  // No organization — show CTA
+  // No organization — show CTA (but still allow users with properties to see some data)
   if (!organization) {
     return <NoOrganizationCTA tc={tc} />;
   }
 
   const orgId = organization.id;
 
-  // Fetch all dashboard data in parallel
-  const [kpis, activity, queue] = await Promise.all([
-    getDashboardKPIs(orgId),
-    getRecentActivity(orgId, 10),
-    getProcessingQueue(orgId),
-  ]);
+  // Fetch all dashboard data in parallel — wrap in try-catch to prevent Server Components render errors
+  let kpis, activity, queue;
+  try {
+    [kpis, activity, queue] = await Promise.all([
+      getDashboardKPIs(orgId),
+      getRecentActivity(orgId, 10),
+      getProcessingQueue(orgId),
+    ]);
+  } catch (err) {
+    console.error("[DashboardPage] Failed to fetch dashboard data:", err);
+    kpis = { totalProperties: 0, activeScenes: 0, monthlyViews: 0, storageUsedMB: 0, scenesGeneratedThisMonth: 0 };
+    activity = [];
+    queue = { queued: 0, running: 0, failed: 0, total: 0, jobs: [] };
+  }
 
   return (
     <div className="flex flex-col gap-8 p-4 sm:p-6 lg:p-8">

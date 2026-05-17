@@ -246,12 +246,8 @@ export default async function PropertyDetailPage({
     console.error("[PropertyDetailPage] Failed to get organization:", err);
   }
 
-  if (!organization) {
-    notFound();
-  }
-
-  // Fetch property detail (already scoped to org)
-  const property = await getPropertyDetail(property_id, organization.id);
+  // Fetch property detail — use org_id if available, otherwise fall back to created_by
+  const property = await getPropertyDetail(property_id, organization?.id ?? null, user.id);
   if (!property) {
     notFound();
   }
