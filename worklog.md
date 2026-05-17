@@ -1428,3 +1428,30 @@ Stage Summary:
 - **SystemStatus**: Compact status bar with 3 indicators (realtime connection, processing queue, upload queue), each with colored dot + icon + tooltip, responsive design
 - No existing files changed, no API routes created, no indigo/blue colors used
 - Both components use emerald/amber/red color scheme consistent with project theme
+
+---
+Task ID: 2
+Agent: Codebase Scanner
+Task: Scan entire Spatia codebase
+
+Work Log:
+- Read worklog.md from previous agents (10+ tasks: auth fixes, redirect loop, 500 errors, LingBot-Map pipeline, i18n, landing page)
+- Read all configuration files: package.json, next.config.ts, tailwind.config.ts, tsconfig.json, Caddyfile, components.json, eslint.config.mjs, postcss.config.mjs
+- Read all Supabase integration files: client.ts, server.ts, middleware.ts, property.ts, dashboard.ts
+- Read auth system: authServer.ts, orgResolver.ts, actions/auth.ts, auth callback route
+- Read i18n setup: config.ts, request.ts, client.ts, all 3 translation files verified
+- Read database schema: supabase/schema.sql (1730 lines, 28+ tables, full RLS), video_pipeline.sql migration
+- Read types: src/lib/types/index.ts (902 lines covering all DB entities, rendering, pipeline, billing, analytics, workers, enterprise)
+- Read custom renderer: src/lib/renderer/gaussianSplatRenderer.ts (1094 lines, WebGL2, orbit camera, radix sort depth ordering, progressive rendering)
+- Read mini-services: gpu-worker (575 lines, 9-stage pipeline with AI enhancement + cost tracking), processing-worker (251 lines, 4-stage MVP), auto-scaler (1159 lines, queue monitoring + paid user prioritization + free-tier delay), lingbot-worker (780 lines Python, frame extraction + LingBot-Map inference + splat conversion)
+- Read video upload helper, capture flow, scene loader
+- Read middleware.ts (auth protection, OAuth code redirect, session refresh)
+- Read root layout.tsx (SEO metadata, JSON-LD, NextIntlClientProvider, LocaleProvider)
+- Read globals.css (Tailwind 4, oklch colors, RTL overrides, animations)
+- Read .env file (Supabase URL + keys, DATABASE_URL, APP_URL)
+- Counted 246 TypeScript source files in src/
+
+Stage Summary:
+- Comprehensive scan completed for all major subsystems
+- Full architecture report provided below
+- Key issues identified: .env APP_URL still points to localhost, next-auth installed but unused, Zustand/React Query installed but unused in src, schema.sql missing some tables referenced by code (cost_configs, enterprise_settings, scene_thumbnails, etc.)
