@@ -214,21 +214,38 @@ export default async function PropertyDetailPage({
   const tdashboard = await getTranslations("dashboard");
 
   // Get authenticated user
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    console.error("[PropertyDetailPage] Failed to create Supabase client:", err);
+  }
+
   if (!supabase) {
     notFound();
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    user = authUser;
+  } catch (err) {
+    console.error("[PropertyDetailPage] Failed to get user:", err);
+  }
 
   if (!user) {
     notFound();
   }
 
   // Get user's organization
-  const { organization } = await getUserOrganization(user.id);
+  let organization;
+  try {
+    const orgResult = await getUserOrganization(user.id);
+    organization = orgResult.organization;
+  } catch (err) {
+    console.error("[PropertyDetailPage] Failed to get organization:", err);
+  }
+
   if (!organization) {
     notFound();
   }
@@ -243,12 +260,19 @@ export default async function PropertyDetailPage({
   const sceneIds = property.scenes.map((s) => s.id);
   let processingJobs: ProcessingJob[] = [];
   if (sceneIds.length > 0) {
-    const { data: jobs } = await supabase
-      .from("processing_jobs")
-      .select("*")
-      .in("scene_id", sceneIds)
-      .order("started_at", { ascending: false });
-    processingJobs = (jobs || []) as ProcessingJob[];
+    try {
+      const { data: jobs, error: jobsError } = await supabase
+        .from("processing_jobs")
+        .select("*")
+        .in("scene_id", sceneIds)
+        .order("started_at", { ascending: false });
+      if (jobsError) {
+        console.error("[PropertyDetailPage] Processing jobs query error:", jobsError.message);
+      }
+      processingJobs = (jobs || []) as ProcessingJob[];
+    } catch (err) {
+      console.error("[PropertyDetailPage] Failed to fetch processing jobs:", err);
+    }
   }
 
   // Derive the primary (latest) scene

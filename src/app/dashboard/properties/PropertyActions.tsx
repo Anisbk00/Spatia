@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { MoreHorizontal, Eye, Link as LinkIcon, Archive, Trash2, Pencil, Camera, FolderOpen } from "lucide-react";
 import { useCallback } from "react";
 import { useTranslations } from "next-intl";
+import { toast } from "sonner";
 
 interface PropertyActionsProps {
   propertyId: string;
@@ -26,6 +27,7 @@ export function PropertyActions({ propertyId, propertyStatus }: PropertyActionsP
   const handleCopyLink = useCallback(async () => {
     const url = `${window.location.origin}/property/${propertyId}`;
     await navigator.clipboard.writeText(url);
+    toast.success("Link copied to clipboard");
   }, [propertyId]);
 
   const handleOpenViewer = useCallback(() => {
@@ -40,10 +42,15 @@ export function PropertyActions({ propertyId, propertyStatus }: PropertyActionsP
         body: JSON.stringify({ status: "archived" }),
       });
       if (res.ok) {
+        toast.success("Property archived");
         router.refresh();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error || "Failed to archive property");
       }
     } catch (err) {
       console.error("[PropertyActions] Failed to archive property:", err);
+      toast.error("Network error. Please try again.");
     }
   }, [propertyId, router]);
 
@@ -56,10 +63,15 @@ export function PropertyActions({ propertyId, propertyStatus }: PropertyActionsP
         method: "DELETE",
       });
       if (res.ok) {
+        toast.success("Property deleted");
         router.refresh();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error || "Failed to delete property");
       }
     } catch (err) {
       console.error("[PropertyActions] Failed to delete property:", err);
+      toast.error("Network error. Please try again.");
     }
   }, [propertyId, router, td]);
 

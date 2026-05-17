@@ -27,21 +27,39 @@ export default async function DashboardEditPropertyPage({
   const tc = await getTranslations("common");
 
   // Authenticate user
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    console.error("[EditPropertyPage] Failed to create Supabase client:", err);
+  }
+
   if (!supabase) {
     notFound();
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    user = authUser;
+  } catch (err) {
+    console.error("[EditPropertyPage] Failed to get user:", err);
+  }
 
   if (!user) {
     redirect("/auth/login");
   }
 
   // Get user's organization
-  const { organization, membership } = await getUserOrganization(user.id);
+  let organization;
+  let membership;
+  try {
+    const orgResult = await getUserOrganization(user.id);
+    organization = orgResult.organization;
+    membership = orgResult.membership;
+  } catch (err) {
+    console.error("[EditPropertyPage] Failed to get organization:", err);
+  }
 
   if (!organization) {
     return (

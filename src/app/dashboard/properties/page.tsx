@@ -110,7 +110,13 @@ export default async function PropertiesPage({
   const page = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
 
   // Get authenticated user
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    console.error("[PropertiesPage] Failed to create Supabase client:", err);
+  }
+
   if (!supabase) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center p-4">
@@ -125,9 +131,13 @@ export default async function PropertiesPage({
     );
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    user = authUser;
+  } catch (err) {
+    console.error("[PropertiesPage] Failed to get user:", err);
+  }
 
   if (!user) {
     return (

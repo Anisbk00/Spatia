@@ -25,7 +25,12 @@ export default async function DashboardNewPropertyPage({
   const tc = await getTranslations("common");
   const td = await getTranslations("dashboard");
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    console.error("[NewPropertyPage] Failed to create Supabase client:", err);
+  }
 
   if (!supabase) {
     return (
@@ -40,15 +45,27 @@ export default async function DashboardNewPropertyPage({
     );
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user;
+  try {
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    user = authUser;
+  } catch (err) {
+    console.error("[NewPropertyPage] Failed to get user:", err);
+  }
 
   if (!user) {
     redirect("/auth/login");
   }
 
-  const { organization, membership } = await getUserOrganization(user.id);
+  let organization;
+  let membership;
+  try {
+    const orgResult = await getUserOrganization(user.id);
+    organization = orgResult.organization;
+    membership = orgResult.membership;
+  } catch (err) {
+    console.error("[NewPropertyPage] Failed to get organization:", err);
+  }
 
   if (!organization) {
     return (

@@ -278,70 +278,89 @@ export async function getOrgProperties(
     pageSize?: number;
   }
 ): Promise<{ properties: PropertyRow[]; total: number }> {
-  const supabase = await createClient();
-  if (!supabase) return { properties: [], total: 0 };
+  try {
+    const supabase = await createClient();
+    if (!supabase) return { properties: [], total: 0 };
 
-  const page = options?.page ?? 1;
-  const pageSize = options?.pageSize ?? 20;
-  const from = (page - 1) * pageSize;
-  const to = from + pageSize - 1;
+    const page = options?.page ?? 1;
+    const pageSize = options?.pageSize ?? 20;
+    const from = (page - 1) * pageSize;
+    const to = from + pageSize - 1;
 
-  let query = supabase
-    .from("properties")
-    .select("*", { count: "exact" })
-    .eq("org_id", orgId)
-    .order("updated_at", { ascending: false })
-    .range(from, to);
+    let query = supabase
+      .from("properties")
+      .select("*", { count: "exact" })
+      .eq("org_id", orgId)
+      .order("updated_at", { ascending: false })
+      .range(from, to);
 
-  if (options?.status) {
-    query = query.eq("status", options.status);
-  }
-  if (options?.propertyType) {
-    query = query.eq("property_type", options.propertyType);
-  }
-  if (options?.search) {
-    const searchPattern = `%${options.search.replace(/[%_]/g, '\\$&')}%`;
-    query = query.or(`title.ilike.${searchPattern},address.ilike.${searchPattern}`);
-  }
-
-  const { data: properties, count } = await query;
-  if (!properties || properties.length === 0) {
-    return { properties: [], total: count ?? 0 };
-  }
-
-  // Get scene status for each property
-  const propertyIds = properties.map((p) => p.id);
-  const { data: scenes } = await supabase
-    .from("scenes")
-    .select("property_id, status")
-    .in("property_id", propertyIds);
-
-  const sceneMap = new Map<string, string>();
-  for (const scene of scenes || []) {
-    if (!sceneMap.has(scene.property_id)) {
-      sceneMap.set(scene.property_id, scene.status);
+    if (options?.status) {
+      query = query.eq("status", options.status);
     }
+    if (options?.propertyType) {
+      query = query.eq("property_type", options.propertyType);
+    }
+    if (options?.search) {
+      const searchPattern = `%${options.search.replace(/[%_]/g, '\\$&')}%`;
+      query = query.or(`title.ilike.${searchPattern},address.ilike.${searchPattern}`);
+    }
+
+    const { data: properties, count, error: propertiesError } = await query;
+
+    if (propertiesError) {
+      console.error("[getOrgProperties] Query error:", propertiesError.message);
+      return { properties: [], total: 0 };
+    }
+
+    if (!properties || properties.length === 0) {
+      return { properties: [], total: count ?? 0 };
+    }
+
+    // Get scene status for each property
+    const propertyIds = properties.map((p) => p.id);
+
+    const [scenesRes, viewCountsRes] = await Promise.all([
+      supabase
+        .from("scenes")
+        .select("property_id, status")
+        .in("property_id", propertyIds),
+      supabase
+        .from("property_views")
+        .select("property_id")
+        .in("property_id", propertyIds),
+    ]);
+
+    if (scenesRes.error) {
+      console.error("[getOrgProperties] Scenes query error:", scenesRes.error.message);
+    }
+    if (viewCountsRes.error) {
+      console.error("[getOrgProperties] Views query error:", viewCountsRes.error.message);
+    }
+
+    const sceneMap = new Map<string, string>();
+    for (const scene of scenesRes.data || []) {
+      if (!sceneMap.has(scene.property_id)) {
+        sceneMap.set(scene.property_id, scene.status);
+      }
+    }
+
+    const viewCountMap = new Map<string, number>();
+    for (const view of viewCountsRes.data || []) {
+      const current = viewCountMap.get(view.property_id) ?? 0;
+      viewCountMap.set(view.property_id, current + 1);
+    }
+
+    const rows: PropertyRow[] = properties.map((p) => ({
+      ...p,
+      scene_status: sceneMap.get(p.id) ?? null,
+      view_count: viewCountMap.get(p.id) ?? 0,
+    }));
+
+    return { properties: rows, total: count ?? 0 };
+  } catch (err) {
+    console.error("[getOrgProperties] Unexpected error:", err);
+    return { properties: [], total: 0 };
   }
-
-  // Get view counts for each property
-  const { data: viewCounts } = await supabase
-    .from("property_views")
-    .select("property_id")
-    .in("property_id", propertyIds);
-
-  const viewCountMap = new Map<string, number>();
-  for (const view of viewCounts || []) {
-    const current = viewCountMap.get(view.property_id) ?? 0;
-    viewCountMap.set(view.property_id, current + 1);
-  }
-
-  const rows: PropertyRow[] = properties.map((p) => ({
-    ...p,
-    scene_status: sceneMap.get(p.id) ?? null,
-    view_count: viewCountMap.get(p.id) ?? 0,
-  }));
-
-  return { properties: rows, total: count ?? 0 };
 }
 
 // ============================================
@@ -356,32 +375,52 @@ export type PropertyDetail = Property & {
 };
 
 export async function getPropertyDetail(propertyId: string, orgId: string): Promise<PropertyDetail | null> {
-  const supabase = await createClient();
-  if (!supabase) return null;
+  try {
+    const supabase = await createClient();
+    if (!supabase) return null;
 
-  const { data: property } = await supabase
-    .from("properties")
-    .select("*")
-    .eq("id", propertyId)
-    .eq("org_id", orgId)
-    .single();
+    const { data: property, error: propertyError } = await supabase
+      .from("properties")
+      .select("*")
+      .eq("id", propertyId)
+      .eq("org_id", orgId)
+      .single();
 
-  if (!property) return null;
+    if (propertyError || !property) return null;
 
-  const [scenesRes, sessionsRes, mediaRes, viewsRes] = await Promise.all([
-    supabase.from("scenes").select("*").eq("property_id", propertyId).order("created_at", { ascending: false }),
-    supabase.from("capture_sessions").select("*").eq("property_id", propertyId).order("started_at", { ascending: false }),
-    supabase.from("media").select("*").eq("property_id", propertyId).eq("type", "image").order("order_index", { ascending: true, nullsFirst: false }),
-    supabase.from("property_views").select("id", { count: "exact", head: true }).eq("property_id", propertyId),
-  ]);
+    // Fetch related data in parallel with individual error handling
+    const [scenesRes, sessionsRes, mediaRes, viewsRes] = await Promise.all([
+      supabase.from("scenes").select("*").eq("property_id", propertyId).order("created_at", { ascending: false }),
+      supabase.from("capture_sessions").select("*").eq("property_id", propertyId).order("started_at", { ascending: false }),
+      supabase.from("media").select("*").eq("property_id", propertyId).eq("type", "image").order("order_index", { ascending: true }),
+      supabase.from("property_views").select("id", { count: "exact", head: true }).eq("property_id", propertyId),
+    ]);
 
-  return {
-    ...property,
-    scenes: (scenesRes.data || []) as Scene[],
-    capture_sessions: (sessionsRes.data || []) as CaptureSession[],
-    media: (mediaRes.data || []) as Media[],
-    view_count: viewsRes.count ?? 0,
-  };
+    // Log non-critical query errors but don't crash the page
+    if (scenesRes.error) {
+      console.error("[getPropertyDetail] Scenes query error:", scenesRes.error.message);
+    }
+    if (sessionsRes.error) {
+      console.error("[getPropertyDetail] Sessions query error:", sessionsRes.error.message);
+    }
+    if (mediaRes.error) {
+      console.error("[getPropertyDetail] Media query error:", mediaRes.error.message);
+    }
+    if (viewsRes.error) {
+      console.error("[getPropertyDetail] Views query error:", viewsRes.error.message);
+    }
+
+    return {
+      ...property,
+      scenes: (scenesRes.data || []) as Scene[],
+      capture_sessions: (sessionsRes.data || []) as CaptureSession[],
+      media: (mediaRes.data || []) as Media[],
+      view_count: viewsRes.count ?? 0,
+    };
+  } catch (err) {
+    console.error("[getPropertyDetail] Unexpected error:", err);
+    return null;
+  }
 }
 
 // ============================================
@@ -451,35 +490,49 @@ export async function getUserOrganization(userId: string): Promise<{
   membership: OrganizationMember | null;
   members: (OrganizationMember & { user: User })[];
 }> {
-  const supabase = await createClient();
+  try {
+    const supabase = await createClient();
 
-  if (!supabase) {
+    if (!supabase) {
+      return { organization: null, membership: null, members: [] };
+    }
+
+    const { data: memberships, error: membershipsError } = await supabase
+      .from("organization_members")
+      .select("*, organizations(*)")
+      .eq("user_id", userId)
+      .limit(1);
+
+    if (membershipsError) {
+      console.error("[getUserOrganization] Memberships query error:", membershipsError.message);
+      return { organization: null, membership: null, members: [] };
+    }
+
+    const membership = memberships?.[0] as OrganizationMember & { organizations: Organization } | undefined;
+    const organization = membership?.organizations ?? null;
+
+    if (!organization) {
+      return { organization: null, membership: null, members: [] };
+    }
+
+    const { data: members, error: membersError } = await supabase
+      .from("organization_members")
+      .select("*, users(*)")
+      .eq("org_id", organization.id);
+
+    if (membersError) {
+      console.error("[getUserOrganization] Members query error:", membersError.message);
+    }
+
+    return {
+      organization,
+      membership: membership as OrganizationMember,
+      members: (members || []) as (OrganizationMember & { user: User })[],
+    };
+  } catch (err) {
+    console.error("[getUserOrganization] Unexpected error:", err);
     return { organization: null, membership: null, members: [] };
   }
-
-  const { data: memberships } = await supabase
-    .from("organization_members")
-    .select("*, organizations(*)")
-    .eq("user_id", userId)
-    .limit(1);
-
-  const membership = memberships?.[0] as OrganizationMember & { organizations: Organization } | undefined;
-  const organization = membership?.organizations ?? null;
-
-  if (!organization) {
-    return { organization: null, membership: null, members: [] };
-  }
-
-  const { data: members } = await supabase
-    .from("organization_members")
-    .select("*, users(*)")
-    .eq("org_id", organization.id);
-
-  return {
-    organization,
-    membership: membership as OrganizationMember,
-    members: (members || []) as (OrganizationMember & { user: User })[],
-  };
 }
 
 // ============================================

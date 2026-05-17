@@ -75,7 +75,23 @@ export async function POST(request: NextRequest) {
   }
 
   // 5. Parse and validate input
-  const body: CreatePropertyInput = await request.json();
+  let body: CreatePropertyInput;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid request body" },
+      { status: 400 }
+    );
+  }
+
+  if (!body || typeof body !== "object") {
+    return NextResponse.json(
+      { error: "Request body must be a JSON object" },
+      { status: 400 }
+    );
+  }
+
   const errors: FieldErrors = {};
 
   if (!body.title?.trim()) {
