@@ -1,0 +1,13 @@
+{
+  "name": "processing-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/index.ts",
+    "start": "bun src/index.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.4"
+  }
+}

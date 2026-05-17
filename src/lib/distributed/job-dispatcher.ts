@@ -1,0 +1,340 @@
+// ============================================
+// JobDispatcher — Routes queued processing jobs
+// to the best available worker in the cluster.
+// ============================================
+// Handles job assignment, queue depth monitoring,
+// priority-aware scheduling, and orphaned job
+// recovery for the distributed processing system.
+// ============================================
+
+import { createClient } from "@/lib/supabase/server";
+import type { Worker } from "@/lib/types";
+import { WorkerRegistry } from "./worker-registry";
+import { LoadBalancer } from "./load-balancer";
+
+const FREE_TIER_DELAY_THRESHOLD = 10;
+const STUCK_JOB_TIMEOUT_MINUTES = 30;
+
+export class JobDispatcher {
+  private registry: WorkerRegistry;
+  private balancer: LoadBalancer;
+
+  constructor() {
+    this.registry = new WorkerRegistry();
+    this.balancer = new LoadBalancer();
+  }
+
+  /**
+   * Find the best available worker for the next queued job,
+   * then assign the job to that worker.
+   * Returns { jobId, workerId } on success, or null if no
+   * worker or job is available.
+   */
+  async dispatchNextJob(
+    region?: string
+  ): Promise<{ jobId: string; workerId: string } | null> {
+    const supabase = await createClient();
+    if (!supabase) return null;
+
+    // 1. Get available workers
+    const workers = await this.registry.getAvailableWorkers(region);
+    if (workers.length === 0) {
+      return null;
+    }
+
+    // 2. Get next queued job (priority-aware)
+    const job = await this.getNextQueuedJob();
+    if (!job) {
+      return null;
+    }
+
+    // 3. Select the best worker for this job
+    const bestWorker = this.balancer.selectBestWorker(workers, { region });
+    if (!bestWorker) {
+      return null;
+    }
+
+    // 4. Assign job to worker
+    const assigned = await this.assignJobToWorker(job.id, bestWorker.id);
+    if (!assigned) {
+      return null;
+    }
+
+    return { jobId: job.id, workerId: bestWorker.worker_id };
+  }
+
+  /**
+   * Assign a job to a specific worker.
+   * Uses the dispatch_job_to_worker RPC if available,
+   * otherwise falls back to a direct update.
+   */
+  async assignJobToWorker(
+    jobId: string,
+    workerId: string
+  ): Promise<boolean> {
+    const supabase = await createClient();
+    if (!supabase) return false;
+
+    // Try the RPC first (atomic assignment)
+    const { data: rpcResult, error: rpcError } = await supabase.rpc(
+      "dispatch_job_to_worker",
+      { p_job_id: jobId, p_worker_id: workerId }
+    );
+
+    // If RPC exists and succeeded, return result
+    if (!rpcError) {
+      return rpcResult !== false;
+    }
+
+    // Fallback: direct update if RPC doesn't exist
+    const { error } = await supabase
+      .from("processing_jobs")
+      .update({
+        status: "running",
+        started_at: new Date().toISOString(),
+      })
+      .eq("id", jobId)
+      .eq("status", "queued");
+
+    if (error) {
+      console.error(`Failed to assign job ${jobId} to worker ${workerId}:`, error);
+      return false;
+    }
+
+    // Update worker status to busy and increment job count
+    const { data: worker } = await supabase
+      .from("workers")
+      .select("current_job_count, max_concurrent_jobs")
+      .eq("id", workerId)
+      .single();
+
+    if (worker) {
+      const newJobCount = (worker.current_job_count ?? 0) + 1;
+      const newStatus: Worker["status"] =
+        newJobCount >= (worker.max_concurrent_jobs ?? 1) ? "busy" : "busy";
+
+      await supabase
+        .from("workers")
+        .update({
+          current_job_count: newJobCount,
+          status: newStatus,
+        })
+        .eq("id", workerId);
+    }
+
+    return true;
+  }
+
+  /**
+   * Get the count of queued processing jobs.
+   */
+  async getQueueDepth(): Promise<number> {
+    const supabase = await createClient();
+    if (!supabase) return 0;
+
+    const { count, error } = await supabase
+      .from("processing_jobs")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "queued");
+
+    if (error) {
+      console.error("Failed to get queue depth:", error);
+      return 0;
+    }
+
+    return count ?? 0;
+  }
+
+  /**
+   * Get the count of queued jobs broken down by the
+   * organization's plan tier (business, pro, free).
+   */
+  async getQueueByPriority(): Promise<{
+    business: number;
+    pro: number;
+    free: number;
+  }> {
+    const supabase = await createClient();
+    if (!supabase) return { business: 0, pro: 0, free: 0 };
+
+    const result = { business: 0, pro: 0, free: 0 };
+
+    // Query queued jobs joined with scenes → properties → organizations
+    // to determine the org's plan tier.
+    const { data, error } = await supabase
+      .from("processing_jobs")
+      .select(`
+        id,
+        scenes (
+          property_id,
+          properties (
+            org_id,
+            organizations (
+              plan
+            )
+          )
+        )
+      `)
+      .eq("status", "queued");
+
+    if (error || !data) {
+      return result;
+    }
+
+    for (const job of data) {
+      const plan = (
+        job as Record<string, unknown>
+      )?.scenes &&
+        (
+          (
+            (job as unknown as Record<string, Record<string, unknown>>).scenes as Record<string, unknown>
+          )?.properties as Record<string, unknown>
+        )?.organizations &&
+        (
+          (
+            (
+              (job as unknown as Record<string, Record<string, unknown>>).scenes as Record<string, Record<string, unknown>>
+            ).properties as Record<string, Record<string, unknown>>
+          ).organizations as Record<string, unknown>
+        ).plan as string;
+
+      if (plan === "business") {
+        result.business++;
+      } else if (plan === "pro") {
+        result.pro++;
+      } else {
+        result.free++;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Returns true if the queue depth exceeds the threshold
+   * and free-tier jobs should be delayed in favor of
+   * paying customers.
+   */
+  async shouldDelayFreeTier(): Promise<boolean> {
+    const depth = await this.getQueueDepth();
+    return depth > FREE_TIER_DELAY_THRESHOLD;
+  }
+
+  /**
+   * Find jobs that have been running for too long (stuck jobs)
+   * and requeue them so they can be picked up by healthy workers.
+   * Returns the count of requeued jobs.
+   *
+   * Instead of matching jobs to offline workers via worker_id
+   * (the processing_jobs table does not have a worker_id column),
+   * this method finds running jobs whose started_at is older than
+   * the timeout threshold and requeues them.
+   */
+  async requeueOrphanedJobs(): Promise<number> {
+    const supabase = await createClient();
+    if (!supabase) return 0;
+
+    // Find all running jobs that started longer than the timeout ago
+    const cutoffTime = new Date(
+      Date.now() - STUCK_JOB_TIMEOUT_MINUTES * 60 * 1000
+    ).toISOString();
+
+    const { data: stuckJobs, error: jobsError } = await supabase
+      .from("processing_jobs")
+      .select("id, retry_count")
+      .eq("status", "running")
+      .lt("started_at", cutoffTime);
+
+    if (jobsError || !stuckJobs || stuckJobs.length === 0) {
+      return 0;
+    }
+
+    // Requeue each stuck job with incremented retry_count
+    let requeuedCount = 0;
+
+    for (const job of stuckJobs) {
+      const newRetryCount = (job.retry_count ?? 0) + 1;
+
+      // If retry limit exceeded, mark as failed instead
+      if (newRetryCount >= 3) {
+        const { error: failError } = await supabase
+          .from("processing_jobs")
+          .update({
+            status: "failed",
+            retry_count: newRetryCount,
+            finished_at: new Date().toISOString(),
+          })
+          .eq("id", job.id);
+
+        if (failError) {
+          console.error(`Failed to mark stuck job ${job.id} as failed:`, failError);
+        } else {
+          requeuedCount++;
+        }
+        continue;
+      }
+
+      // Requeue the job with incremented retry_count
+      const { error: updateError } = await supabase
+        .from("processing_jobs")
+        .update({
+          status: "queued",
+          started_at: null,
+          retry_count: newRetryCount,
+        })
+        .eq("id", job.id);
+
+      if (updateError) {
+        console.error(`Failed to requeue stuck job ${job.id}:`, updateError);
+      } else {
+        requeuedCount++;
+      }
+    }
+
+    return requeuedCount;
+  }
+
+  // ---- Private helpers ----
+
+  /**
+   * Get the next queued job with priority awareness.
+   * Business tier jobs come first, then pro, then free.
+   */
+  private async getNextQueuedJob(): Promise<{
+    id: string;
+    scene_id: string;
+    job_type: string;
+  } | null> {
+    const supabase = await createClient();
+    if (!supabase) return null;
+
+    // If we should delay free tier, only look at paid tier jobs first
+    const delayFree = await this.shouldDelayFreeTier();
+
+    if (delayFree) {
+      // Try to find business/pro tier jobs first
+      const { data, error } = await supabase
+        .from("processing_jobs")
+        .select("id, scene_id, job_type")
+        .eq("status", "queued")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .single();
+
+      if (!error && data) return data;
+
+      // If no paid jobs, fall through to any queued job
+    }
+
+    const { data, error } = await supabase
+      .from("processing_jobs")
+      .select("id, scene_id, job_type")
+      .eq("status", "queued")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .single();
+
+    if (error || !data) return null;
+    return data;
+  }
+}

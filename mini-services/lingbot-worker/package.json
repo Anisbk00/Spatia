@@ -1,0 +1,10 @@
+{
+  "name": "lingbot-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LingBot-Map GPU Worker for Spatia 3D Reconstruction Pipeline",
+  "scripts": {
+    "dev": ".venv/bin/python3 index.py",
+    "start": ".venv/bin/python3 index.py"
+  }
+}
