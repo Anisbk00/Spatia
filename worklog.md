@@ -1455,3 +1455,139 @@ Stage Summary:
 - Comprehensive scan completed for all major subsystems
 - Full architecture report provided below
 - Key issues identified: .env APP_URL still points to localhost, next-auth installed but unused, Zustand/React Query installed but unused in src, schema.sql missing some tables referenced by code (cost_configs, enterprise_settings, scene_thumbnails, etc.)
+
+---
+Task ID: 2
+Agent: property-library
+Task: Create property management library layer (validation, mutations, drafts, realtime)
+
+Work Log:
+- Read existing types (src/lib/types/index.ts) — Property, PropertyType, PropertyStatus, etc.
+- Read existing queries (src/lib/supabase/dashboard.ts, property.ts) — avoided duplication, new files complement existing ones
+- Read Supabase client/server modules — understood createClient() returns null when unconfigured
+- Verified zod v4 installed (^4.0.2) and used correct API
+- Created src/lib/properties/validation.ts:
+  - propertyCreateSchema: title (required 1-200), address (optional max 300), property_type (5 enum values), price (optional non-negative), description (optional max 5000), city (optional max 100), country (optional max 100)
+  - propertyUpdateSchema: all fields optional + status (5 enum values), refined to require at least one field
+  - propertyIdSchema: UUID format validation
+  - Exported inferred types: PropertyCreateInput, PropertyUpdateInput
+  - Exported constant arrays: PROPERTY_TYPE_VALUES, PROPERTY_STATUS_VALUES
+- Created src/lib/properties/mutations.ts:
+  - updateProperty(propertyId, orgId, data) — validates inputs, verifies org_id matches, returns { data, error }
+  - deleteProperty(propertyId, orgId) — soft delete (status→archived), verifies org_id, returns { data, error }
+  - hardDeleteProperty(propertyId, orgId) — actual delete, verifies org_id + status must be draft/archived, returns { data, error }
+  - All functions: validate with zod schemas, check org ownership, return typed results, never throw
+- Created src/lib/properties/drafts.ts:
+  - DRAFT_KEY = "spatia_property_draft" constant
+  - savePropertyDraft(draft) — saves to localStorage with timestamp
+  - loadPropertyDraft() — loads most recent draft, auto-expires after 24 hours
+  - clearPropertyDraft() — removes draft
+  - All functions handle SSR safely (typeof window check)
+  - Handles localStorage errors gracefully (quota, private browsing)
+- Created src/lib/properties/realtime.ts:
+  - PropertyRealtimeEvent discriminated union type (property_updated, property_created, property_deleted)
+  - subscribeToPropertyUpdates(orgId, callback) — subscribes to postgres_changes on properties table filtered by org_id
+  - unsubscribeFromPropertyUpdates() — cleans up channel subscription
+  - Casts payload.new/old to Record<string, unknown> for TypeScript strict mode
+  - Handles null client gracefully (no-op if Supabase not configured)
+- Created src/lib/properties/index.ts — barrel export of all schemas, types, functions, constants
+- Lint: clean pass with zero errors
+
+Stage Summary:
+- 5 production files created in src/lib/properties/ — zero placeholders, zero mock data, zero console.logs
+- Validation layer with zod v4 schemas and inferred TypeScript types
+- Mutation layer with org ownership verification on every write operation
+- Draft persistence with 24-hour auto-expiry and SSR safety
+- Realtime subscriptions with typed event discriminated unions
+- Clean barrel export for easy importing
+
+---
+Task ID: 4
+Agent: api-route-builder
+Task: Create production-grade PATCH/DELETE API routes for /api/properties/[property_id]
+
+Work Log:
+- Read existing POST route at /api/properties/route.ts to understand auth pattern (Supabase createClient → getUser → org membership lookup)
+- Read mutation functions from /lib/properties/mutations.ts (updateProperty, deleteProperty, hardDeleteProperty — all with org_id verification built-in)
+- Read validation schemas from /lib/properties/validation.ts (propertyIdSchema = UUID, propertyUpdateSchema with zod refine requiring at least one field)
+- Read /lib/event-tracking/server.ts to understand trackServerEvent API for analytics
+- Created /src/app/api/properties/[property_id]/route.ts with:
+  - **Shared authenticateRequest helper**: Gets user + orgId from Supabase, returns typed discriminated union
+  - **Shared errorToStatus helper**: Maps mutation error strings to HTTP status codes (404, 403, 422, 500)
+  - **PATCH handler**:
+    1. Supabase client creation with null check (503)
+    2. Auth via authenticateRequest (401)
+    3. property_id validation with propertyIdSchema (422)
+    4. Request body parsing + propertyUpdateSchema validation (400/422)
+    5. org_id gate — returns 403 if user has no org
+    6. Calls updateProperty(propertyId, orgId, validatedData)
+    7. Best-effort analytics: trackServerEvent("PROPERTY_UPDATED", ...) with .catch()
+    8. Returns updated property as JSON
+  - **DELETE handler**:
+    1. Supabase client creation with null check (503)
+    2. Auth via authenticateRequest (401)
+    3. property_id validation with propertyIdSchema (422)
+    4. Parse optional body for { hardDelete?: boolean } — gracefully handles missing body
+    5. org_id gate — returns 403 if user has no org
+    6. If hardDelete=true → hardDeleteProperty, else → deleteProperty (soft delete to "archived")
+    7. Best-effort analytics: PROPERTY_DELETED or PROPERTY_ARCHIVED event
+    8. Returns { success, property_id, action }
+- Added PROPERTY_UPDATED, PROPERTY_DELETED, PROPERTY_ARCHIVED to EVENT_TYPES constant in /src/lib/event-tracking/index.ts
+- Added PROPERTY_UPDATED, PROPERTY_DELETED, PROPERTY_ARCHIVED to validateEventType() in /src/app/api/events/route.ts
+- Used Next.js 16 dynamic route params pattern: `{ params }: { params: Promise<{ property_id: string }> }`
+- All async operations wrapped in try/catch with safe error messages (never expose internal details on 500)
+- org_id checks happen BEFORE all mutations
+- Clean lint pass, dev server running without errors
+
+Stage Summary:
+- **PATCH /api/properties/[property_id]**: Full update endpoint with zod validation, org ownership verification, and analytics tracking
+- **DELETE /api/properties/[property_id]**: Soft delete (archive) by default, hard delete with `{ hardDelete: true }` body, both with analytics
+- **Event types**: Added 3 new event types (PROPERTY_UPDATED, PROPERTY_DELETED, PROPERTY_ARCHIVED) to both the EVENT_TYPES constant and the events API validation list
+- **Security**: org_id gate before every mutation, internal errors never exposed to client, proper HTTP status codes throughout
+
+---
+Task ID: 5-6
+Agent: page-builder
+Task: Create dashboard property create and edit pages
+
+Work Log:
+- Read all existing files to understand patterns: /properties/new/page.tsx, property-form.tsx, [property_id]/page.tsx, dashboard layout, dashboard.ts, validation.ts, drafts.ts
+- Added 12 new translation keys to property namespace in all 3 locale files (en.json, fr.json, ar.json):
+  - selectStatus, saving, coverImageUrl, coverImageUrlPlaceholder, titleRequired, priceNonNegative, networkError, createSuccess, updateSuccess, videoModeIndicator, videoModeIndicatorDesc
+- Created /src/app/dashboard/properties/new/page.tsx (SERVER component):
+  - Authenticates user via Supabase server client
+  - Gets user's organization via getUserOrganization()
+  - If no org, shows message with CTA to create/join one
+  - Supports ?mode=video query param for video capture mode
+  - Renders CreatePropertyForm client component with orgId, orgRole, isVideoMode props
+  - After successful creation, redirects to /dashboard/properties/[propertyId] (not capture flow)
+  - Uses same card-based layout with emerald accent as existing dashboard pages
+  - Uses getTranslations from next-intl/server
+- Created /src/app/dashboard/properties/new/CreatePropertyForm.tsx (CLIENT component):
+  - Form fields: Title (required), Address, Property Type (select), Price (number), Description (textarea)
+  - Video mode indicator with emerald border styling
+  - POSTs to /api/properties on submit
+  - Translation-aware: all labels and validation messages use useTranslations
+  - Cancel button links back to /dashboard/properties
+- Created /src/app/dashboard/properties/[property_id]/edit/page.tsx (SERVER component):
+  - Authenticates user, gets organization
+  - Fetches property detail via getPropertyDetail(propertyId, orgId)
+  - If property not found, returns notFound()
+  - Renders EditPropertyForm pre-filled with existing property data
+  - Uses await params pattern for Next.js 16 dynamic routes
+- Created /src/app/dashboard/properties/[property_id]/edit/EditPropertyForm.tsx (CLIENT component):
+  - Same form fields as create, pre-filled with existing data
+  - Admin-only fields (when orgRole is owner/admin): Status select, Cover Image URL input
+  - Smart PATCH: only sends changed fields in request body
+  - PATCHes to /api/properties/[property_id] on submit
+  - After successful update, redirects to /dashboard/properties/[propertyId]
+  - Translation-aware: all labels, placeholders, validation messages use useTranslations
+- Lint: clean pass with zero errors
+
+Stage Summary:
+- Two new production pages: dashboard property create (/dashboard/properties/new) and edit (/dashboard/properties/[property_id]/edit)
+- Server components handle auth + data fetching, client components handle form interactivity
+- Full i18n support with 12 new translation keys across English, French, Arabic
+- Edit page supports admin-only status and cover image fields
+- Smart diff-based PATCH requests (only changed fields sent)
+- Visual consistency: card-based layout, emerald accent, shadcn/ui components matching existing dashboard

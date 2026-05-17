@@ -180,7 +180,7 @@ export default async function PropertiesPage({
               : td("manageProperties")}
           </p>
         </div>
-        <Link href="/properties/new">
+        <Link href="/dashboard/properties/new">
           <Button className="gap-2">
             <Plus className="h-4 w-4" />
             {td("newProperty")}
@@ -209,7 +209,7 @@ export default async function PropertiesPage({
                 : td("noPropertiesCreateHint")}
             </p>
             {!search && !status && !propertyType && (
-              <Link href="/properties/new" className="mt-6">
+              <Link href="/dashboard/properties/new" className="mt-6">
                 <Button className="gap-2">
                   <Plus className="h-4 w-4" />
                   {tp("createProperty")}
@@ -271,7 +271,7 @@ export default async function PropertiesPage({
                       <TableCell>
                         <div className="max-w-[280px]">
                           <Link
-                            href={`/property/${property.id}`}
+                            href={`/dashboard/properties/${property.id}`}
                             className="font-medium hover:underline truncate block"
                           >
                             {property.title}

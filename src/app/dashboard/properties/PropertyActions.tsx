@@ -9,7 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { MoreHorizontal, Eye, Link as LinkIcon, Archive, Trash2, Pencil } from "lucide-react";
+import { MoreHorizontal, Eye, Link as LinkIcon, Archive, Trash2, Pencil, Camera, FolderOpen } from "lucide-react";
 import { useCallback } from "react";
 import { useTranslations } from "next-intl";
 
@@ -73,9 +73,21 @@ export function PropertyActions({ propertyId, propertyStatus }: PropertyActionsP
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuItem asChild>
-          <a href={`/properties/${propertyId}/edit`} className="cursor-pointer">
+          <a href={`/dashboard/properties/${propertyId}`} className="cursor-pointer">
+            <FolderOpen className="h-4 w-4" />
+            {td("openProperty")}
+          </a>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <a href={`/dashboard/properties/${propertyId}/edit`} className="cursor-pointer">
             <Pencil className="h-4 w-4" />
             {tc("edit")}
+          </a>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <a href={`/capture/${propertyId}`} className="cursor-pointer">
+            <Camera className="h-4 w-4" />
+            {td("startCapture")}
           </a>
         </DropdownMenuItem>
         <DropdownMenuItem onClick={handleOpenViewer} className="cursor-pointer">

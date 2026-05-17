@@ -40,6 +40,9 @@ function validateEventType(eventType: string): boolean {
   const validTypes = [
     // Core product events
     "PROPERTY_CREATED",
+    "PROPERTY_UPDATED",
+    "PROPERTY_DELETED",
+    "PROPERTY_ARCHIVED",
     "CAPTURE_STARTED",
     "IMAGE_UPLOADED",
     "CAPTURE_COMPLETED",

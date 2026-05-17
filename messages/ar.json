@@ -283,7 +283,18 @@
     "supabaseNotConfiguredDesc": "قم بتعيين NEXT_PUBLIC_SUPABASE_URL و NEXT_PUBLIC_SUPABASE_ANON_KEY في ملف .env.local الخاص بك.",
     "videoCaptureTitle": "التقاط جولة فيديو",
     "photoDescription": "أدخل التفاصيل، ثم ابدأ التقاط الصور للجولة ثلاثية الأبعاد.",
-    "videoDescription": "أدخل التفاصيل، ثم سجّل فيديو جولة لإعادة البناء ثلاثي الأبعاد."
+    "videoDescription": "أدخل التفاصيل، ثم سجّل فيديو جولة لإعادة البناء ثلاثي الأبعاد.",
+    "selectStatus": "اختر الحالة",
+    "saving": "جارٍ الحفظ...",
+    "coverImageUrl": "رابط صورة الغلاف",
+    "coverImageUrlPlaceholder": "https://example.com/image.jpg",
+    "titleRequired": "العنوان مطلوب",
+    "priceNonNegative": "لا يمكن أن يكون السعر سالبًا",
+    "networkError": "خطأ في الشبكة. يرجى التحقق من اتصالك والمحاولة مرة أخرى.",
+    "createSuccess": "تم إنشاء العقار بنجاح",
+    "updateSuccess": "تم تحديث العقار بنجاح",
+    "videoModeIndicator": "وضع التقاط الفيديو",
+    "videoModeIndicatorDesc": "سجّل فيديو جولة لإعادة البناء ثلاثي الأبعاد"
   },
   "capture": {
     "title": "التقاط الصور",
@@ -427,6 +438,7 @@
     "manageProperties": "أدر إدراجات عقاراتك وجولاتك ثلاثية الأبعاد",
     "searchByTitle": "البحث بالعنوان أو العنوان...",
     "openViewer": "فتح العارض",
+    "openProperty": "فتح العقار",
     "copyShareLink": "نسخ رابط المشاركة",
     "archive": "أرشفة",
     "deleteConfirm": "هل أنت متأكد من حذف هذا العقار؟ لا يمكن التراجع عن هذا الإجراء.",

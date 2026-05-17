@@ -283,7 +283,18 @@
     "supabaseNotConfiguredDesc": "Définissez NEXT_PUBLIC_SUPABASE_URL et NEXT_PUBLIC_SUPABASE_ANON_KEY dans votre fichier .env.local.",
     "videoCaptureTitle": "Capture de visite vidéo",
     "photoDescription": "Remplissez les détails, puis commencez à prendre des photos pour la visite 3D.",
-    "videoDescription": "Remplissez les détails, puis enregistrez une vidéo de visite pour la reconstruction 3D."
+    "videoDescription": "Remplissez les détails, puis enregistrez une vidéo de visite pour la reconstruction 3D.",
+    "selectStatus": "Sélectionner le statut",
+    "saving": "Enregistrement…",
+    "coverImageUrl": "URL de l'image de couverture",
+    "coverImageUrlPlaceholder": "https://exemple.com/image.jpg",
+    "titleRequired": "Le titre est obligatoire",
+    "priceNonNegative": "Le prix ne peut pas être négatif",
+    "networkError": "Erreur réseau. Vérifiez votre connexion et réessayez.",
+    "createSuccess": "Bien créé avec succès",
+    "updateSuccess": "Bien mis à jour avec succès",
+    "videoModeIndicator": "Mode capture vidéo",
+    "videoModeIndicatorDesc": "Enregistrez une vidéo de visite pour la reconstruction 3D"
   },
   "capture": {
     "title": "Capture photo",
@@ -427,6 +438,7 @@
     "manageProperties": "Gérez vos annonces et visites 3D",
     "searchByTitle": "Rechercher par titre ou adresse…",
     "openViewer": "Ouvrir la visionneuse",
+    "openProperty": "Ouvrir la propriété",
     "copyShareLink": "Copier le lien de partage",
     "archive": "Archiver",
     "deleteConfirm": "Êtes-vous sûr de vouloir supprimer ce bien ? Cette action est irréversible.",
