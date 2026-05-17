@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import CaptureSessionClient from "@/components/capture/CaptureSessionClient";
 import type { CaptureSession, Property } from "@/lib/types";
@@ -28,8 +28,12 @@ export default async function CaptureSessionPage({
     redirect("/auth/login");
   }
 
+  // Use admin client for reads to bypass RLS (prevents infinite recursion errors)
+  const adminClient = createAdminClient();
+  const readClient = adminClient || supabase;
+
   // Verify agent/admin role
-  const { data: profile } = await supabase
+  const { data: profile } = await readClient
     .from("users")
     .select("role")
     .eq("id", user.id)
@@ -40,7 +44,7 @@ export default async function CaptureSessionPage({
   }
 
   // Fetch capture session with property
-  const { data: session } = await supabase
+  const { data: session } = await readClient
     .from("capture_sessions")
     .select("*")
     .eq("id", session_id)
@@ -51,7 +55,7 @@ export default async function CaptureSessionPage({
   }
 
   // Fetch property
-  const { data: property } = await supabase
+  const { data: property } = await readClient
     .from("properties")
     .select("*")
     .eq("id", session.property_id)

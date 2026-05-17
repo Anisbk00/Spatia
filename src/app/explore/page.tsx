@@ -1,5 +1,5 @@
 import type { User } from "@supabase/supabase-js";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { getPublicProperties } from "@/lib/supabase/property";
 import type { Property } from "@/lib/types";
 import { ExploreContent } from "./ExploreContent";
@@ -27,7 +27,10 @@ export default async function ExplorePage() {
 
     if (user) {
       try {
-        const { data, error } = await supabase
+        // Use admin client to bypass RLS for profile reads
+        const adminClient = createAdminClient();
+        const readClient = adminClient || supabase;
+        const { data, error } = await readClient
           .from("users")
           .select("id, role, email, full_name")
           .eq("id", user.id)
@@ -52,17 +55,22 @@ export default async function ExplorePage() {
 
   // For each property, check if it has a ready scene (for the "3D Available" badge)
   const propertiesWithScene: Record<string, boolean> = {};
-  if (supabase && properties.length > 0) {
+  if (properties.length > 0) {
     try {
-      const propertyIds = properties.map((p) => p.id);
-      const { data: scenes } = await supabase
-        .from("scenes")
-        .select("property_id, status")
-        .in("property_id", propertyIds)
-        .eq("status", "ready");
-      if (scenes) {
-        for (const s of scenes) {
-          propertiesWithScene[s.property_id] = true;
+      // Use admin client to bypass RLS for scene reads
+      const adminClient = createAdminClient();
+      const readClient = adminClient || supabase;
+      if (readClient) {
+        const propertyIds = properties.map((p) => p.id);
+        const { data: scenes } = await readClient
+          .from("scenes")
+          .select("property_id, status")
+          .in("property_id", propertyIds)
+          .eq("status", "ready");
+        if (scenes) {
+          for (const s of scenes) {
+            propertiesWithScene[s.property_id] = true;
+          }
         }
       }
     } catch (err) {

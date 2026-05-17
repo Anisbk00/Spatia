@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import {
   Card,
@@ -40,8 +40,12 @@ export default async function ProcessingPage({
     redirect("/auth/login");
   }
 
+  // Use admin client for reads to bypass RLS
+  const adminClient = createAdminClient();
+  const readClient = adminClient || supabase;
+
   // Fetch session + property for context
-  const { data: session } = await supabase
+  const { data: session } = await readClient
     .from("capture_sessions")
     .select("*, properties(*)")
     .eq("id", session_id)

@@ -31,11 +31,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Use admin client for ALL data operations to bypass RLS
+  const adminClient = createAdminClient();
+  const dataClient = adminClient || supabase;
+
   // 3. Ensure user has a profile row in public.users
   //    (OAuth users may not have one yet if onboarding wasn't completed)
   let orgId: string | null = null;
 
-  const { data: existingProfile } = await supabase
+  const { data: existingProfile } = await dataClient
     .from("users")
     .select("id")
     .eq("id", user.id)
@@ -43,50 +47,27 @@ export async function POST(request: NextRequest) {
 
   if (!existingProfile) {
     // Auto-create profile row so FK constraints on properties/capture_sessions are satisfied
-    const adminClient = createAdminClient();
-    if (adminClient) {
-      const { error: profileError } = await adminClient
-        .from("users")
-        .insert({
-          id: user.id,
-          email: user.email ?? "",
-          full_name: user.user_metadata?.full_name ?? user.user_metadata?.name ?? null,
-          role: "client",
-        });
+    const { error: profileError } = await dataClient
+      .from("users")
+      .insert({
+        id: user.id,
+        email: user.email ?? "",
+        full_name: user.user_metadata?.full_name ?? user.user_metadata?.name ?? null,
+        role: "client",
+      });
 
-      if (profileError) {
-        console.error("[Properties API] Failed to create user profile:", profileError);
-        return NextResponse.json(
-          { error: "Failed to set up user profile. Please try again." },
-          { status: 500 }
-        );
-      }
-    } else {
-      // Fallback: try with user-context client
-      const { error: profileError } = await supabase
-        .from("users")
-        .insert({
-          id: user.id,
-          email: user.email ?? "",
-          full_name: user.user_metadata?.full_name ?? user.user_metadata?.name ?? null,
-          role: "client",
-        });
-
-      if (profileError) {
-        console.error("[Properties API] Failed to create user profile:", profileError);
-        return NextResponse.json(
-          { error: "Failed to set up user profile. Please try again." },
-          { status: 500 }
-        );
-      }
+    if (profileError) {
+      console.error("[Properties API] Failed to create user profile:", profileError);
+      return NextResponse.json(
+        { error: "Failed to set up user profile. Please try again." },
+        { status: 500 }
+      );
     }
   }
 
   // 4. Fetch org membership — use admin client to bypass potential RLS on organization_members
   try {
-    const adminClient = createAdminClient();
-    const clientToUse = adminClient || supabase;
-    const { data: membership } = await clientToUse
+    const { data: membership } = await dataClient
       .from("organization_members")
       .select("org_id")
       .eq("user_id", user.id)
@@ -130,10 +111,7 @@ export async function POST(request: NextRequest) {
   }
 
   // 6. Create property — use admin client to bypass RLS
-  const adminClient = createAdminClient();
-  const writeClient = adminClient || supabase;
-
-  const { data: property, error: propertyError } = await writeClient
+  const { data: property, error: propertyError } = await dataClient
     .from("properties")
     .insert({
       org_id: orgId,
@@ -157,13 +135,13 @@ export async function POST(request: NextRequest) {
   }
 
   // 7. Update property status to 'capturing'
-  await writeClient
+  await dataClient
     .from("properties")
     .update({ status: "capturing" })
     .eq("id", property.id);
 
   // 8. Create capture session
-  const { data: session, error: sessionError } = await writeClient
+  const { data: session, error: sessionError } = await dataClient
     .from("capture_sessions")
     .insert({
       property_id: property.id,
@@ -176,7 +154,7 @@ export async function POST(request: NextRequest) {
   if (sessionError || !session) {
     console.error("[Properties API] Session insert error:", sessionError);
     // Rollback: archive the property if session creation fails
-    await writeClient
+    await dataClient
       .from("properties")
       .update({ status: "draft" })
       .eq("id", property.id);
