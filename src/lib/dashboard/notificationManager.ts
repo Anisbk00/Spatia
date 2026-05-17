@@ -129,23 +129,24 @@ export function subscribeToNotificationEvents(
         filter: `org_id=eq.${orgId}`,
       },
       (payload) => {
-        const eventType = payload.new.event_type as string;
+        const rec = payload.new as Record<string, unknown>;
+        const eventType = rec.event_type as string;
         const notifType = EVENT_NOTIFICATION_MAP[eventType];
         if (!notifType) return;
 
         const title = getNotificationTitle(notifType);
         const description = getNotificationDescription(
           notifType,
-          payload.new.metadata,
+          (rec.metadata as Record<string, unknown>) ?? {},
         );
 
         const notif = addNotification({
           type: notifType,
           title,
           description,
-          timestamp: payload.new.created_at || new Date().toISOString(),
-          propertyId: payload.new.property_id,
-          sceneId: payload.new.scene_id,
+          timestamp: (rec.created_at as string) || new Date().toISOString(),
+          propertyId: (rec.property_id as string) ?? undefined,
+          sceneId: (rec.scene_id as string) ?? undefined,
         });
 
         onNewNotification(notif);
