@@ -1,72 +1,21 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { createClient, createAdminClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
 import { SignupForm } from "@/components/auth/SignupForm";
 
 /**
  * Server-component wrapper for the signup page.
  *
- * Authenticated users are redirected based on their role:
- *   - Buyers (clients) without properties → /explore
- *   - Agents/admins or buyers with properties → /dashboard
+ * Authenticated users are redirected to the role-aware redirect page.
  */
 export default async function AuthSignupPage() {
   const supabase = await createClient();
 
-  // If user is already authenticated, redirect based on role
+  // If user is already authenticated, redirect to role-aware page
   if (supabase) {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
-      const admin = createAdminClient();
-      if (admin) {
-        try {
-          const { data: profile } = await admin
-            .from("users")
-            .select("role")
-            .eq("id", user.id)
-            .single();
-
-          let role = profile?.role || "client";
-
-          // Fix stale role: If user has no org membership and no properties,
-          // they likely selected "I'm a Buyer" during onboarding but the role
-          // wasn't updated (bug in older code). Fix it now.
-          if (role === "agent") {
-            const { data: orgMembership } = await admin
-              .from("organization_members")
-              .select("org_id")
-              .eq("user_id", user.id)
-              .maybeSingle();
-
-            const { count: propertyCount } = await admin
-              .from("properties")
-              .select("*", { count: "exact", head: true })
-              .eq("created_by", user.id);
-
-            if (!orgMembership && (!propertyCount || propertyCount === 0)) {
-              await admin
-                .from("users")
-                .update({ role: "client" })
-                .eq("id", user.id);
-              role = "client";
-            }
-          }
-
-          if (role === "client") {
-            const { count } = await admin
-              .from("properties")
-              .select("*", { count: "exact", head: true })
-              .eq("created_by", user.id);
-
-            if (!count || count === 0) {
-              redirect("/explore");
-            }
-          }
-        } catch {
-          // Fall through to dashboard
-        }
-      }
-      redirect("/dashboard");
+      redirect("/auth/redirect");
     }
   }
 

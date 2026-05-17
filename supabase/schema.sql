@@ -543,7 +543,7 @@ begin
     new.email,
     coalesce(new.raw_user_meta_data ->> 'full_name', null),
     coalesce(new.raw_user_meta_data ->> 'avatar_url', null),
-    coalesce(new.raw_user_meta_data ->> 'role', 'agent')
+    coalesce(new.raw_user_meta_data ->> 'role', 'client')
   );
   return new;
 end;

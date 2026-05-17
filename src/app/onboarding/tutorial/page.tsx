@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { TutorialFlow } from "@/components/onboarding/TutorialFlow";
 
@@ -19,24 +19,38 @@ export default async function TutorialOnboardingPage() {
 
   const userId = user.id;
 
+  // Use admin client to check role (bypasses RLS)
+  const admin = createAdminClient();
+
   // Check user role for role-specific tutorial content
-  const { data: profile } = await supabase
-    .from("users")
-    .select("role")
-    .eq("id", userId)
-    .single();
+  let userRole = "client";
+  if (admin) {
+    const { data: profile } = await admin
+      .from("users")
+      .select("role")
+      .eq("id", userId)
+      .single();
+    userRole = profile?.role || "client";
+  } else {
+    const { data: profile } = await supabase
+      .from("users")
+      .select("role")
+      .eq("id", userId)
+      .single();
+    userRole = profile?.role || "client";
+  }
 
-  const userRole = profile?.role || "agent";
-
-  // Check onboarding state — if already completed, go to dashboard
-  const { data: onboardingState } = await supabase
+  // Check onboarding state — if already completed, redirect based on role
+  const checkClient = admin || supabase;
+  const { data: onboardingState } = await checkClient
     .from("onboarding_state")
     .select("is_completed")
     .eq("user_id", userId)
     .maybeSingle();
 
   if (onboardingState?.is_completed) {
-    redirect("/dashboard");
+    // Role-aware redirect: buyers → /explore, agents/admins → /dashboard
+    redirect("/auth/redirect");
   }
 
   return <TutorialFlow userId={userId} userRole={userRole} />;

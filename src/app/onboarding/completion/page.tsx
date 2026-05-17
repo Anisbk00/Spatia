@@ -21,29 +21,30 @@ export default async function CompletionOnboardingPage() {
   const userId = user.id;
   const userEmail = user.email ?? "";
 
-  // Check user role for role-specific completion content
+  // Use admin client to bypass RLS
   const admin = createAdminClient();
-  let userRole = "agent";
+  const checkClient = admin || supabase;
 
+  // Check user role for role-specific completion content
+  let userRole = "client";
   if (admin) {
     const { data: profile } = await admin
       .from("users")
       .select("role")
       .eq("id", userId)
       .single();
-    userRole = profile?.role || "agent";
+    userRole = profile?.role || "client";
   } else {
     const { data: profile } = await supabase
       .from("users")
       .select("role")
       .eq("id", userId)
       .single();
-    userRole = profile?.role || "agent";
+    userRole = profile?.role || "client";
   }
 
   // Get full onboarding state
-  const onboardingClient = admin || supabase;
-  const { data: onboardingState } = await onboardingClient
+  const { data: onboardingState } = await checkClient
     .from("onboarding_state")
     .select("*")
     .eq("user_id", userId)
@@ -51,22 +52,12 @@ export default async function CompletionOnboardingPage() {
 
   // If onboarding already completed, redirect based on role
   if (onboardingState?.is_completed) {
-    if (userRole === "client") {
-      if (admin) {
-        const { count } = await admin
-          .from("properties")
-          .select("*", { count: "exact", head: true })
-          .eq("created_by", userId);
-        if (!count || count === 0) {
-          redirect("/explore");
-        }
-      }
-    }
-    redirect("/dashboard");
+    // Use the role-aware redirect page
+    redirect("/auth/redirect");
   }
 
   // Get org membership for context
-  const { data: membership } = await onboardingClient
+  const { data: membership } = await checkClient
     .from("organization_members")
     .select("org_id")
     .eq("user_id", userId)

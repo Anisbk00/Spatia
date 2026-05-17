@@ -145,7 +145,8 @@ export default function OnboardingPage() {
           const data = await res.json();
           if (data.state) {
             if (data.state.is_completed) {
-              router.push("/dashboard");
+              // Role-aware redirect: buyers → /explore, agents/admins → /dashboard
+              window.location.href = "/auth/redirect";
               return;
             }
             setCurrentStep(data.state.current_step ?? 0);
@@ -230,12 +231,17 @@ export default function OnboardingPage() {
       setCompletedSteps([0]);
       goToStep(1);
     } else {
-      // Client: update role to "client" in the database, skip org setup and property creation
-      if (supabase && userId) {
-        await supabase
-          .from("users")
-          .update({ role: "client" })
-          .eq("id", userId);
+      // Client: update role to "client" via admin API (bypasses RLS), skip org setup and property creation
+      if (userId) {
+        try {
+          await fetch("/api/user/role", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ role: "client" }),
+          });
+        } catch (err) {
+          console.error("[Onboarding] Failed to update role to client:", err);
+        }
       }
       await saveOnboardingState(3, [0], { metadata: { role: "client" } });
       setCompletedSteps([0]);
@@ -381,12 +387,9 @@ export default function OnboardingPage() {
       console.error("[Onboarding] Failed to mark onboarding complete:", err);
     }
 
-    // Buyers with properties go to dashboard, buyers without go to explore
-    if (userRole === "client") {
-      router.push(propertyCreated ? "/dashboard" : "/explore");
-    } else {
-      router.push("/dashboard");
-    }
+    // Use server-side redirect page for reliable role-based routing
+    // (ensures session cookies are available and role is fresh from DB)
+    window.location.href = "/auth/redirect";
   };
 
   const handleSkipAll = async () => {
@@ -407,12 +410,8 @@ export default function OnboardingPage() {
       console.error("[Onboarding] Failed to save skip state:", err);
     }
 
-    // Buyers go to explore (no properties in skip path), agents/admins go to dashboard
-    if (userRole === "client") {
-      router.push("/explore");
-    } else {
-      router.push("/dashboard");
-    }
+    // Use server-side redirect page for reliable role-based routing
+    window.location.href = "/auth/redirect";
   };
 
   const handleSkipSetup = async () => {

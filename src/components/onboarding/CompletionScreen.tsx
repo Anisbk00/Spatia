@@ -55,12 +55,9 @@ export function CompletionScreen({
 
     await markOnboardingComplete();
 
-    // Buyers with properties go to dashboard, buyers without go to explore
-    if (isClient) {
-      router.push(hasProperty ? "/dashboard" : "/explore");
-    } else {
-      router.push("/dashboard");
-    }
+    // Use server-side redirect page for reliable role-based routing
+    // (ensures session cookies are available and role is fresh from DB)
+    window.location.href = "/auth/redirect";
   };
 
   return (

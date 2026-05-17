@@ -3,9 +3,11 @@
 // ============================================
 // Mark onboarding as completed for the
 // authenticated user.
+// Uses admin client to bypass RLS and ensure
+// the update always succeeds.
 // ============================================
 
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 
 export async function POST() {
@@ -25,12 +27,22 @@ export async function POST() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Use admin client to bypass RLS — ensures onboarding completion
+  // always succeeds even if RLS policies are misconfigured
+  const admin = createAdminClient();
+  if (!admin) {
+    return NextResponse.json(
+      { error: "Admin service not configured" },
+      { status: 503 }
+    );
+  }
+
   // Upsert: update existing or create new
-  const { data: existing } = await supabase
+  const { data: existing } = await admin
     .from("onboarding_state")
     .select("id, completed_steps")
     .eq("user_id", user.id)
-    .single();
+    .maybeSingle();
 
   if (existing) {
     // Add step 4 to completed if not already there, then mark complete
@@ -38,7 +50,7 @@ export async function POST() {
       new Set([...(existing.completed_steps || []), 4])
     ).sort();
 
-    const { data: updated, error } = await supabase
+    const { data: updated, error } = await admin
       .from("onboarding_state")
       .update({
         current_step: 4,
@@ -62,7 +74,7 @@ export async function POST() {
   }
 
   // No existing state — create as completed
-  const { data: created, error } = await supabase
+  const { data: created, error } = await admin
     .from("onboarding_state")
     .insert({
       user_id: user.id,
