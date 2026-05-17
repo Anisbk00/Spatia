@@ -134,8 +134,8 @@ function sanitizeAnonymousEvent(
   // Truncate user agent
   const userAgent = (event.user_agent || ua).substring(0, MAX_USER_AGENT_LENGTH) || null;
 
-  // Hash the IP for privacy (we don't store raw IPs for anonymous events)
-  const ipHash = requestIp ? `anon_${requestIp.length}_${requestIp.charCodeAt(0)}` : null;
+  // IP address: must be valid inet format or null for Supabase
+  const ipAddress = requestIp && /^\d{1,3}(\.\d{1,3}){3}$/.test(requestIp) ? requestIp : null;
 
   return {
     user_id: null, // anonymous
@@ -147,7 +147,7 @@ function sanitizeAnonymousEvent(
     scene_id: null,
     device_type: deviceType,
     user_agent: userAgent,
-    ip_address: ipHash,
+    ip_address: ipAddress,
   };
 }
 

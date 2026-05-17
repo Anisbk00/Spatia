@@ -38,11 +38,12 @@ export function subscribeToDashboardUpdates(
         filter: `property_id=in.(select id from properties where org_id = '${orgId}')`,
       },
       (payload) => {
+        const rec = payload.new as Record<string, unknown>;
         onEvent({
           type: "scene_updated",
-          sceneId: payload.new.id,
-          status: payload.new.status,
-          propertyId: payload.new.property_id,
+          sceneId: rec.id as string,
+          status: rec.status as string,
+          propertyId: rec.property_id as string,
         });
       },
     )
@@ -60,11 +61,12 @@ export function subscribeToDashboardUpdates(
         table: "processing_jobs",
       },
       (payload) => {
+        const rec = payload.new as Record<string, unknown>;
         onEvent({
           type: "job_updated",
-          jobId: payload.new.id,
-          status: payload.new.status,
-          sceneId: payload.new.scene_id,
+          jobId: rec.id as string,
+          status: rec.status as string,
+          sceneId: rec.scene_id as string,
         });
       },
     )
@@ -82,11 +84,12 @@ export function subscribeToDashboardUpdates(
         table: "capture_sessions",
       },
       (payload) => {
+        const rec = payload.new as Record<string, unknown>;
         onEvent({
           type: "capture_updated",
-          sessionId: payload.new.id,
-          status: payload.new.status,
-          propertyId: payload.new.property_id,
+          sessionId: rec.id as string,
+          status: rec.status as string,
+          propertyId: rec.property_id as string,
         });
       },
     )
