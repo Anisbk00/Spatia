@@ -39,11 +39,15 @@ export async function POST(request: NextRequest) {
   //    (OAuth users may not have one yet if onboarding wasn't completed)
   let orgId: string | null = null;
 
-  const { data: existingProfile } = await dataClient
+  const { data: existingProfile, error: profileQueryError } = await dataClient
     .from("users")
     .select("id")
     .eq("id", user.id)
-    .single();
+    .maybeSingle();
+
+  if (profileQueryError) {
+    console.error("[Properties API] Profile query error:", profileQueryError);
+  }
 
   if (!existingProfile) {
     // Auto-create profile row so FK constraints on properties/capture_sessions are satisfied
@@ -67,15 +71,19 @@ export async function POST(request: NextRequest) {
 
   // 4. Fetch org membership — use admin client to bypass potential RLS on organization_members
   try {
-    const { data: membership } = await dataClient
+    const { data: membership, error: memberError } = await dataClient
       .from("organization_members")
       .select("org_id")
       .eq("user_id", user.id)
       .limit(1)
-      .single();
+      .maybeSingle();
+    if (memberError) {
+      console.error("[Properties API] Org membership query error:", memberError);
+    }
     orgId = membership?.org_id ?? null;
-  } catch {
+  } catch (err) {
     // User may not have an org membership yet — that's OK
+    console.error("[Properties API] Org membership catch:", err);
   }
 
   // 5. Parse and validate input

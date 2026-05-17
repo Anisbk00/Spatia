@@ -17,34 +17,42 @@ function isServiceRoleConfigured(): boolean {
 /**
  * Create a Supabase server client that operates within the user's auth context.
  * This client respects RLS policies — use for read operations and auth checks.
+ *
+ * Returns null if Supabase is not configured or if client creation fails.
  */
 export async function createClient() {
   if (!isSupabaseConfigured()) {
     return null;
   }
 
-  const cookieStore = await cookies();
+  try {
+    const cookieStore = await cookies();
 
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
+    return createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return cookieStore.getAll();
+          },
+          setAll(cookiesToSet) {
+            try {
+              cookiesToSet.forEach(({ name, value, options }) =>
+                cookieStore.set(name, value, options)
+              );
+            } catch (err) {
+              // Cookie setting can fail in Server Components (read-only context)
+              // This is expected and safe to ignore
+            }
+          },
         },
-        setAll(cookiesToSet) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
-            );
-          } catch (err) {
-            console.error("[SupabaseServer] Cookie set failed:", err);
-          }
-        },
-      },
-    }
-  );
+      }
+    );
+  } catch (err) {
+    console.error("[SupabaseServer] Failed to create client:", err);
+    return null;
+  }
 }
 
 /**
@@ -59,16 +67,21 @@ export function createAdminClient() {
     return null;
   }
 
-  return createSupabaseJsClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    }
-  );
+  try {
+    return createSupabaseJsClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
+      }
+    );
+  } catch (err) {
+    console.error("[SupabaseAdmin] Failed to create client:", err);
+    return null;
+  }
 }
 
 /**

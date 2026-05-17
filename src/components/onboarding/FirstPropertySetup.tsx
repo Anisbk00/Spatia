@@ -74,11 +74,16 @@ export function FirstPropertySetup({
         }),
       });
 
-      if (res.ok) {
-        trackEvent(EVENT_TYPES.FIRST_PROPERTY_CREATED, {
-          step: ONBOARDING_STEPS.FIRST_PROPERTY,
-        });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        const errorMsg = data?.error || "Failed to create property. Please try again.";
+        setFormError(errorMsg);
+        return;
       }
+
+      trackEvent(EVENT_TYPES.FIRST_PROPERTY_CREATED, {
+        step: ONBOARDING_STEPS.FIRST_PROPERTY,
+      });
 
       trackEvent(EVENT_TYPES.ONBOARDING_STEP_COMPLETED, {
         step: ONBOARDING_STEPS.FIRST_PROPERTY,

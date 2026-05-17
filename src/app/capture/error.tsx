@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { AlertCircle } from "lucide-react";
 
-export default function DashboardError({
+export default function CaptureError({
   error,
   reset,
 }: {
@@ -12,13 +12,10 @@ export default function DashboardError({
   reset: () => void;
 }) {
   useEffect(() => {
-    // Log the full error to the console for debugging
-    console.error("[DashboardError] Server Component error:", error);
+    console.error("[CaptureError] Server Component error:", error);
   }, [error]);
 
-  // Check if it's a Next.js redirect error — these should not be caught
   if (error.digest?.startsWith("NEXT_REDIRECT")) {
-    // This shouldn't happen, but if it does, try to recover
     return (
       <div className="flex min-h-screen items-center justify-center p-4">
         <p className="text-muted-foreground">Redirecting...</p>
@@ -34,19 +31,14 @@ export default function DashboardError({
         </div>
         <h2 className="text-xl font-semibold">Something went wrong</h2>
         <p className="text-sm text-muted-foreground">
-          An error occurred while loading the dashboard. This might be a temporary issue.
+          An error occurred while loading the capture page. Please try again.
         </p>
-        {error.message && !error.digest && (
-          <p className="text-xs text-muted-foreground bg-muted p-2 rounded font-mono break-all">
-            {error.message}
-          </p>
-        )}
         <div className="flex gap-3 justify-center">
           <Button onClick={reset} variant="default">
             Try again
           </Button>
-          <Button onClick={() => (window.location.href = "/")} variant="outline">
-            Go home
+          <Button onClick={() => (window.location.href = "/dashboard")} variant="outline">
+            Back to dashboard
           </Button>
         </div>
       </div>

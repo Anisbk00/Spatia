@@ -33,7 +33,22 @@ export default async function DashboardLayout({
   const tp = await getTranslations("property");
 
   try {
-    const supabase = await createClient();
+    let supabase;
+    try {
+      supabase = await createClient();
+    } catch (err) {
+      console.error("[DashboardLayout] createClient() failed:", err);
+      return (
+        <div className="flex min-h-screen items-center justify-center p-4">
+          <div className="text-center space-y-2">
+            <h2 className="text-lg font-semibold">{tp("supabaseNotConfigured")}</h2>
+            <p className="text-sm text-muted-foreground">
+              {tp("supabaseNotConfiguredDesc")}
+            </p>
+          </div>
+        </div>
+      );
+    }
 
     if (!supabase) {
       return (
@@ -48,9 +63,16 @@ export default async function DashboardLayout({
       );
     }
 
-    const {
-      data: { user: authUser },
-    } = await supabase.auth.getUser();
+    let authUser;
+    try {
+      const { data, error: authError } = await supabase.auth.getUser();
+      if (authError) {
+        console.error("[DashboardLayout] auth.getUser() error:", authError.message);
+      }
+      authUser = data.user;
+    } catch (err) {
+      console.error("[DashboardLayout] auth.getUser() threw:", err);
+    }
 
     if (!authUser) {
       redirect("/auth/login");
@@ -60,24 +82,37 @@ export default async function DashboardLayout({
     const adminClient = createAdminClient();
     const readClient = adminClient || supabase;
 
+    if (!adminClient) {
+      console.warn("[DashboardLayout] Admin client not available, falling back to user-context client (RLS will apply)");
+    }
+
     // Use maybeSingle() — single() throws PGRST116 if no row exists
-    const { data: profile } = await readClient
+    const { data: profile, error: profileError } = await readClient
       .from("users")
       .select("*")
       .eq("id", authUser.id)
       .maybeSingle();
 
-    // All authenticated users with a profile can access the dashboard
+    if (profileError) {
+      console.error("[DashboardLayout] Profile query error:", profileError.message);
+    }
+
+    // If no profile row, the user might be new — redirect to onboarding
     if (!profile) {
-      redirect("/auth/login");
+      console.warn("[DashboardLayout] No profile found for user:", authUser.id);
+      redirect("/onboarding");
     }
 
     // Get user's organization
-    const { data: memberships } = await readClient
+    const { data: memberships, error: membershipsError } = await readClient
       .from("organization_members")
       .select("*, organizations(*)")
       .eq("user_id", authUser.id)
       .limit(1);
+
+    if (membershipsError) {
+      console.error("[DashboardLayout] Memberships query error:", membershipsError.message);
+    }
 
     const membership = memberships?.[0];
     const organization = membership?.organizations as Organization | undefined;
