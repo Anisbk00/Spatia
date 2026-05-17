@@ -104,7 +104,31 @@ export async function GET(request: NextRequest) {
               .eq("id", user.id)
               .single();
 
-            const role = profile?.role || "client";
+            let role = profile?.role || "client";
+
+            // Cross-check: If the user completed onboarding but has no org
+            // membership and no properties, they likely selected "I'm a Buyer"
+            // during onboarding but the role wasn't updated (bug in older code).
+            if (role === "agent") {
+              const { data: orgMembership } = await admin
+                .from("organization_members")
+                .select("org_id")
+                .eq("user_id", user.id)
+                .maybeSingle();
+
+              const { count: propertyCount } = await admin
+                .from("properties")
+                .select("*", { count: "exact", head: true })
+                .eq("created_by", user.id);
+
+              if (!orgMembership && (!propertyCount || propertyCount === 0)) {
+                await admin
+                  .from("users")
+                  .update({ role: "client" })
+                  .eq("id", user.id);
+                role = "client";
+              }
+            }
 
             // Agents and admins always go to dashboard
             if (role === "agent" || role === "admin") {
@@ -114,7 +138,7 @@ export async function GET(request: NextRequest) {
               const { count } = await admin
                 .from("properties")
                 .select("*", { count: "exact", head: true })
-                .eq("owner_id", user.id);
+                .eq("created_by", user.id);
 
               // Buyers with properties go to dashboard, buyers without go to explore
               redirectPath = (count && count > 0) ? "/dashboard" : "/explore";

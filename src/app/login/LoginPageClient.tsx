@@ -221,8 +221,10 @@ export function LoginPageClient({ appOrigin }: LoginPageClientProps) {
       setLoading(false);
       return;
     }
-    router.push("/dashboard");
-    router.refresh();
+    // Navigate to server redirect page that checks role + properties.
+    // Using window.location.href to force a full page navigation
+    // ensures session cookies are available server-side.
+    window.location.href = "/auth/redirect";
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
@@ -254,8 +256,8 @@ export function LoginPageClient({ appOrigin }: LoginPageClientProps) {
       return;
     }
     if (data.session) {
-      router.push("/dashboard");
-      router.refresh();
+      // Navigate to server redirect page that checks role + properties.
+      window.location.href = "/auth/redirect";
       return;
     }
     setVerificationSent(true);

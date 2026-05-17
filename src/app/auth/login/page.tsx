@@ -29,13 +29,37 @@ export default async function AuthLoginPage() {
             .eq("id", user.id)
             .single();
 
-          const role = profile?.role || "client";
+          let role = profile?.role || "client";
+
+          // Fix stale role: If user has no org membership and no properties,
+          // they likely selected "I'm a Buyer" during onboarding but the role
+          // wasn't updated (bug in older code). Fix it now.
+          if (role === "agent") {
+            const { data: orgMembership } = await admin
+              .from("organization_members")
+              .select("org_id")
+              .eq("user_id", user.id)
+              .maybeSingle();
+
+            const { count: propertyCount } = await admin
+              .from("properties")
+              .select("*", { count: "exact", head: true })
+              .eq("created_by", user.id);
+
+            if (!orgMembership && (!propertyCount || propertyCount === 0)) {
+              await admin
+                .from("users")
+                .update({ role: "client" })
+                .eq("id", user.id);
+              role = "client";
+            }
+          }
 
           if (role === "client") {
             const { count } = await admin
               .from("properties")
               .select("*", { count: "exact", head: true })
-              .eq("owner_id", user.id);
+              .eq("created_by", user.id);
 
             if (!count || count === 0) {
               redirect("/explore");

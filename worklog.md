@@ -1649,3 +1649,28 @@ Stage Summary:
 - **Critical fix**: Onboarding now persists client role to database when "I'm a Buyer" is selected
 - **All auth entry points updated**: LoginForm (email login), OAuth callback, auth complete page, middleware, login/signup server pages, onboarding completion
 - **New files**: /src/lib/auth/redirect.ts, /src/app/api/auth/redirect/route.ts, /src/app/auth/redirect/page.tsx
+---
+Task ID: 12
+Agent: main
+Task: Fix post-login redirect still going to /dashboard instead of /explore for buyers
+
+Work Log:
+- Investigated the actual login flow and discovered multiple root causes
+- **Root Cause 1**: `properties` table uses `created_by` column, not `owner_id` — all redirect queries were silently failing
+- **Root Cause 2**: Users who selected "I'm a Buyer" during onboarding still had role="agent" in the database because the old code never updated `users.role` to "client"
+- **Root Cause 3**: LoginForm used `fetch("/api/auth/redirect")` after `signInWithPassword()` — race condition where session cookies might not be set yet when the API call is made
+- **Root Cause 4**: `onboarding_state` table has no `metadata` column — the onboarding code saves `metadata: { role: "client" }` but it's silently ignored by the database
+- **Root Cause 5**: `LoginPageClient.tsx` (at /src/app/login/) had hardcoded `router.push("/dashboard")` — was a dead component but fixed anyway
+- Fixed all property queries to use `created_by` instead of `owner_id`
+- Fixed LoginForm to use `window.location.href = "/auth/redirect"` (full page navigation ensures cookies are available)
+- Fixed LoginPageClient.tsx to use `window.location.href = "/auth/redirect"` 
+- Added stale role detection: if user has role="agent" but no org membership and no properties, auto-fix to role="client"
+- Removed all references to non-existent `metadata` column in `onboarding_state` table
+- Applied stale-role fix across all redirect points: auth callback, auth/redirect page, API redirect, auth login, auth signup, onboarding completion
+- Lint passes clean
+
+Stage Summary:
+- **Critical fix**: `owner_id` → `created_by` in all property queries (was causing silent query failures)
+- **Stale role auto-fix**: Users with role="agent" but no org/properties are auto-corrected to "client" on every auth redirect
+- **Timing fix**: LoginForm now uses `window.location.href` instead of `fetch()` API call
+- **New heuristic**: No org membership + no properties = buyer (client) role, regardless of what the users table says

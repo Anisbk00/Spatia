@@ -168,19 +168,10 @@ export function LoginForm({ appOrigin }: LoginFormProps) {
     }
     fireEvent("LOGIN_SUCCESS", { method: "email" });
 
-    // Determine redirect based on user role and properties
-    try {
-      const res = await fetch("/api/auth/redirect");
-      if (res.ok) {
-        const data = await res.json();
-        router.push(data.redirect || redirectPath);
-      } else {
-        router.push(redirectPath);
-      }
-    } catch {
-      router.push(redirectPath);
-    }
-    router.refresh();
+    // Navigate to server redirect page that checks role + properties.
+    // Using window.location.href instead of router.push to force a full
+    // page navigation — ensures session cookies are available server-side.
+    window.location.href = "/auth/redirect";
   };
 
   const handleOAuthSignIn = async () => {

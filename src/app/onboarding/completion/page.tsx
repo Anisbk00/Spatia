@@ -56,7 +56,7 @@ export default async function CompletionOnboardingPage() {
         const { count } = await admin
           .from("properties")
           .select("*", { count: "exact", head: true })
-          .eq("owner_id", userId);
+          .eq("created_by", userId);
         if (!count || count === 0) {
           redirect("/explore");
         }
