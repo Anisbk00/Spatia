@@ -19,8 +19,19 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
+  // ─── Authenticated user on landing page → redirect to explore ─────────
+  if (pathname === "/") {
+    const hasSession = request.cookies.getAll().some(c => c.name.startsWith('sb-'));
+    if (hasSession) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/explore";
+      return NextResponse.redirect(url);
+    }
+    return response;
+  }
+
   // Simple route protection (no profile check - that's done in page components)
-  const publicRoutes = ["/", "/login", "/auth/callback", "/auth/complete", "/auth/login", "/auth/signup", "/auth/forgot-password", "/auth/reset-password", "/explore", "/viewer", "/view", "/property", "/about", "/privacy", "/terms", "/api"];
+  const publicRoutes = ["/login", "/auth/callback", "/auth/complete", "/auth/login", "/auth/signup", "/auth/forgot-password", "/auth/reset-password", "/explore", "/viewer", "/view", "/property", "/about", "/privacy", "/terms", "/api"];
   const isPublicRoute = publicRoutes.some((route) =>
     route === "/" ? pathname === "/" : pathname.startsWith(route)
   );
