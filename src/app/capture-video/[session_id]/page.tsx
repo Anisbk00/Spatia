@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -87,13 +88,26 @@ export default function VideoCapturePage({
   const [propertyId, setPropertyId] = useState<string | null>(null);
   const [videoCaptureId, setVideoCaptureId] = useState<string | null>(null);
   const [storagePath, setStoragePath] = useState<string | null>(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadStartTimeRef = useRef<number>(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Auth guard
+  useEffect(() => {
+    const checkAuth = async () => {
+      const supabase = createClient();
+      if (!supabase) { router.push("/auth/login"); return; }
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { router.push("/auth/login"); return; }
+    };
+    checkAuth();
+  }, [router]);
 
   // Unwrap params
-  useState(() => {
+  useEffect(() => {
     params.then((p) => setSessionId(p.session_id));
-  });
+  }, [params]);
 
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -124,6 +138,9 @@ export default function VideoCapturePage({
       setVideoFile(file);
       setVideoDuration(metadata.duration);
       setVideoDimensions({ width: metadata.width, height: metadata.height });
+      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+      const url = URL.createObjectURL(file);
+      setVideoPreviewUrl(url);
       setPhase("preview");
     } catch {
       setError("Could not read video metadata. Please try another file.");
@@ -135,6 +152,8 @@ export default function VideoCapturePage({
   }, []);
 
   const handleReRecord = useCallback(() => {
+    if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    setVideoPreviewUrl(null);
     setVideoFile(null);
     setVideoDuration(0);
     setPhase("instructions");
@@ -142,6 +161,20 @@ export default function VideoCapturePage({
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
+  }, [videoPreviewUrl]);
+
+  // Cleanup: revoke video preview URL when component unmounts or URL changes
+  useEffect(() => {
+    return () => {
+      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    };
+  }, [videoPreviewUrl]);
+
+  // Cleanup: abort upload on unmount
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
   }, []);
 
   const handleUpload = useCallback(async () => {
@@ -176,6 +209,7 @@ export default function VideoCapturePage({
       setPropertyId(uploadData.property_id);
 
       // Step 2: Upload the video file to Supabase Storage
+      abortControllerRef.current = new AbortController();
       await uploadVideoFile(
         videoFile,
         uploadData.path,
@@ -189,6 +223,7 @@ export default function VideoCapturePage({
             setUploadSpeed(uploaded / elapsed);
           }
         },
+        abortControllerRef.current.signal,
       );
 
       // Step 3: Confirm the upload
@@ -333,7 +368,7 @@ export default function VideoCapturePage({
                 {/* Video preview */}
                 <div className="relative rounded-xl overflow-hidden bg-black aspect-video">
                   <video
-                    src={URL.createObjectURL(videoFile)}
+                    src={videoPreviewUrl || undefined}
                     controls
                     className="w-full h-full object-contain"
                   />

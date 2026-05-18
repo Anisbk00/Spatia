@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
     .from("capture_sessions")
     .select("id, property_id, properties!inner(org_id)")
     .eq("id", sessionId)
-    .single();
+    .maybeSingle();
 
   if (!session) {
     return NextResponse.json(
@@ -191,7 +191,7 @@ export async function GET(request: NextRequest) {
       .from("capture_sessions")
       .select("id, properties!inner(org_id)")
       .eq("id", sessionId)
-      .single();
+      .maybeSingle();
 
     if (!session) {
       return NextResponse.json(
@@ -303,7 +303,7 @@ export async function PATCH(request: NextRequest) {
     .from("upload_operations")
     .select("id, user_id, org_id, session_id")
     .eq("id", operationId)
-    .single();
+    .maybeSingle();
 
   if (!operation) {
     return NextResponse.json(

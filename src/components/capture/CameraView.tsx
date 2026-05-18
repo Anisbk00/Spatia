@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Camera, RotateCcw } from "lucide-react";
 
@@ -23,6 +23,7 @@ interface CameraViewProps {
 export function CameraView({ onCapture, disabled, lastPreview }: CameraViewProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [capturing, setCapturing] = useState(false);
+  const lastPreviewUrlRef = useRef<string | null>(null);
 
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -30,7 +31,12 @@ export function CameraView({ onCapture, disabled, lastPreview }: CameraViewProps
       if (!file) return;
 
       setCapturing(true);
+      // Revoke previous preview URL to avoid memory leak
+      if (lastPreviewUrlRef.current) {
+        URL.revokeObjectURL(lastPreviewUrlRef.current);
+      }
       const previewUrl = URL.createObjectURL(file);
+      lastPreviewUrlRef.current = previewUrl;
       onCapture(file, previewUrl);
 
       // Reset input so the same file can be recaptured
@@ -40,6 +46,15 @@ export function CameraView({ onCapture, disabled, lastPreview }: CameraViewProps
     },
     [onCapture]
   );
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (lastPreviewUrlRef.current) {
+        URL.revokeObjectURL(lastPreviewUrlRef.current);
+      }
+    };
+  }, []);
 
   const triggerCapture = useCallback(() => {
     inputRef.current?.click();

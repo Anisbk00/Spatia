@@ -156,14 +156,23 @@ export async function uploadWithResume(params: {
     // Update capture session total_images
     await supabase.rpc("increment_session_images", {
       session_id_input: sessionId,
-    }).then(undefined, () => {
-      return supabase
+    }).then(undefined, async () => {
+      // Fallback: read current count and increment
+      const { data: currentSession } = await supabase
         .from("capture_sessions")
-        .update({
-          total_images: orderIndex,
-          status: "uploading",
-        })
-        .eq("id", sessionId);
+        .select("total_images")
+        .eq("id", sessionId)
+        .single();
+
+      if (currentSession) {
+        await supabase
+          .from("capture_sessions")
+          .update({
+            total_images: (currentSession.total_images || 0) + 1,
+            status: "uploading",
+          })
+          .eq("id", sessionId);
+      }
     });
 
     return {
@@ -468,7 +477,7 @@ export class ResumableUploadQueue {
           (u.status === "failed" && u.retryCount < MAX_RETRIES)
       );
 
-      if (!upload || !upload.file) break;
+      if (!upload || !upload.file) continue;
 
       // If retrying, apply exponential backoff
       if (upload.retryCount > 0 && upload.status === "failed") {

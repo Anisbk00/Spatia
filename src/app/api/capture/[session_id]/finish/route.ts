@@ -30,7 +30,7 @@ export async function POST(
     .from("capture_sessions")
     .select("*, properties!inner(org_id)")
     .eq("id", session_id)
-    .single();
+    .maybeSingle();
 
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });

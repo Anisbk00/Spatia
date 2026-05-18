@@ -121,6 +121,17 @@ export default function CaptureSessionClient({
 
   // Finish capture session
   const handleFinish = useCallback(async () => {
+    // Check if uploads are still in progress
+    if (queueRef.current) {
+      const pendingCount = queueRef.current.pendingCount;
+      if (pendingCount > 0) {
+        setError(
+          `Please wait — ${pendingCount} photo(s) are still uploading. They'll be ready in a moment.`
+        );
+        return;
+      }
+    }
+
     setFinishing(true);
     setError(null);
 
@@ -323,12 +334,35 @@ export default function CaptureSessionClient({
 
           {/* Back link */}
           <div className="pb-4 text-center">
-            <a
-              href="/dashboard"
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              Save & exit to dashboard
-            </a>
+            {uploadingCount > 0 ? (
+              <div className="space-y-1">
+                <p className="text-sm text-amber-600">
+                  {uploadingCount} photo(s) still uploading — please wait before leaving
+                </p>
+                <a
+                  href="/dashboard"
+                  className="text-sm text-muted-foreground hover:text-foreground"
+                  onClick={(e) => {
+                    if (
+                      !confirm(
+                        "Photos are still uploading! Leaving now may lose uploads. Continue?"
+                      )
+                    ) {
+                      e.preventDefault();
+                    }
+                  }}
+                >
+                  Save & exit to dashboard
+                </a>
+              </div>
+            ) : (
+              <a
+                href="/dashboard"
+                className="text-sm text-muted-foreground hover:text-foreground"
+              >
+                Save & exit to dashboard
+              </a>
+            )}
           </div>
         </div>
       </main>

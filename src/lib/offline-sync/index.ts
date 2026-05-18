@@ -262,6 +262,22 @@ export class SyncEngine {
         this.reportProgress(synced, failed);
 
         try {
+          // Check if an upload operation already exists for this capture
+          const existingOps = await fetch(
+            `/api/uploads?sessionId=${encodeURIComponent(capture.sessionId)}`
+          );
+          if (existingOps.ok) {
+            const { operations } = await existingOps.json();
+            const existing = operations.find(
+              (op: any) => op.file_name === capture.fileName && op.order_index === capture.orderIndex
+            );
+            if (existing && existing.status !== "failed") {
+              // Already has an active upload operation, skip
+              await this.store.markSynced(capture.id);
+              continue;
+            }
+          }
+
           // Create upload operation via API
           const supabase = createClient();
           let orgId: string | null = null;

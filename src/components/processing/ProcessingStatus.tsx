@@ -64,7 +64,7 @@ export function ProcessingStatus({ sessionId }: ProcessingStatusProps) {
           statusData.pipeline.stage === "completed" &&
           statusData.scene?.modelUrl
         ) {
-          router.push(`/viewer/${statusData.session.propertyId}`);
+          router.push(`/view/${statusData.session.propertyId}`);
         }
       }
     } catch (err) {

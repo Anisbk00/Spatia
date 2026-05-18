@@ -3,74 +3,52 @@
 import { createClient } from "@/lib/supabase/client";
 
 /**
- * Upload a video file to Supabase Storage with chunked upload support
- * and progress tracking.
+ * Upload a video file to Supabase Storage with progress tracking
+ * and optional cancellation support.
+ *
+ * Note: Supabase JS v2 does not natively support chunked uploads, so this
+ * function performs a single whole-file upload. Progress is reported honestly:
+ * 0% before the upload starts and 100% after it completes successfully.
  */
 export async function uploadVideoFile(
   file: File,
   storagePath: string,
   onProgress?: (progress: number, uploadedBytes: number, totalBytes: number) => void,
+  signal?: AbortSignal,
 ): Promise<{ url: string; path: string }> {
   const supabase = createClient();
   if (!supabase) {
     throw new Error("Supabase not configured");
   }
 
-  const CHUNK_SIZE = 6 * 1024 * 1024; // 6MB chunks
   const totalBytes = file.size;
-  let uploadedBytes = 0;
 
-  // For files under 50MB, use simple upload
-  if (totalBytes < 50 * 1024 * 1024) {
-    const { data, error } = await supabase.storage
-      .from("property-captures")
-      .upload(storagePath, file, {
-        contentType: file.type || "video/mp4",
-        upsert: true,
-      });
-
-    if (error) {
-      throw new Error(`Upload failed: ${error.message}`);
-    }
-
-    onProgress?.(100, totalBytes, totalBytes);
-
-    const { data: urlData } = supabase.storage
-      .from("property-captures")
-      .getPublicUrl(storagePath);
-
-    return { url: urlData.publicUrl, path: storagePath };
+  // Check for cancellation before starting
+  if (signal?.aborted) {
+    throw new DOMException("Upload cancelled", "AbortError");
   }
 
-  // Chunked upload for larger files
-  const chunks = Math.ceil(totalBytes / CHUNK_SIZE);
+  // Report 0% progress before the upload begins
+  onProgress?.(0, 0, totalBytes);
 
-  for (let i = 0; i < chunks; i++) {
-    const start = i * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, totalBytes);
-    const chunk = file.slice(start, end);
+  const { error } = await supabase.storage
+    .from("property-captures")
+    .upload(storagePath, file, {
+      contentType: file.type || "video/mp4",
+      upsert: true,
+    });
 
-    // We'll use the simple upload with upsert for each chunk approach
-    // Supabase JS v2 doesn't natively support chunked uploads,
-    // so we use the whole-file approach with progress estimation
-    if (i === chunks - 1) {
-      // Final chunk — upload the whole file
-      const { error } = await supabase.storage
-        .from("property-captures")
-        .upload(storagePath, file, {
-          contentType: file.type || "video/mp4",
-          upsert: true,
-        });
-
-      if (error) {
-        throw new Error(`Upload failed: ${error.message}`);
-      }
+  if (error) {
+    // If the signal aborted while the upload was in flight, prefer the
+    // AbortError so callers can distinguish cancellation from server errors.
+    if (signal?.aborted) {
+      throw new DOMException("Upload cancelled", "AbortError");
     }
-
-    uploadedBytes = end;
-    const progress = Math.round((uploadedBytes / totalBytes) * 100);
-    onProgress?.(progress, uploadedBytes, totalBytes);
+    throw new Error(`Upload failed: ${error.message}`);
   }
+
+  // Report 100% progress after successful upload
+  onProgress?.(100, totalBytes, totalBytes);
 
   const { data: urlData } = supabase.storage
     .from("property-captures")

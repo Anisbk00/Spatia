@@ -90,15 +90,23 @@ export async function uploadMedia(params: {
   // 4. Update capture session total_images (atomic increment)
   await supabase.rpc("increment_session_images", {
     session_id_input: sessionId,
-  }).then(undefined, () => {
-    // Fallback: manual increment if RPC not available yet
-    return supabase
+  }).then(undefined, async () => {
+    // Fallback: read current count and increment
+    const { data: currentSession } = await supabase
       .from("capture_sessions")
-      .update({
-        total_images: orderIndex,
-        status: "uploading",
-      })
-      .eq("id", sessionId);
+      .select("total_images")
+      .eq("id", sessionId)
+      .single();
+
+    if (currentSession) {
+      await supabase
+        .from("capture_sessions")
+        .update({
+          total_images: (currentSession.total_images || 0) + 1,
+          status: "uploading",
+        })
+        .eq("id", sessionId);
+    }
   });
 
   return {
@@ -127,6 +135,20 @@ export async function deleteLastMedia(params: {
 
   // 2. Delete from media table
   await supabase.from("media").delete().eq("id", params.mediaId);
+
+  // 3. Decrement session total_images
+  const { data: session } = await supabase
+    .from("capture_sessions")
+    .select("total_images")
+    .eq("id", params.sessionId)
+    .single();
+
+  if (session && session.total_images > 0) {
+    await supabase
+      .from("capture_sessions")
+      .update({ total_images: session.total_images - 1 })
+      .eq("id", params.sessionId);
+  }
 }
 
 /**

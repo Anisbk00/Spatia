@@ -16,11 +16,50 @@ export async function POST(request: NextRequest) {
   const adminClient = createAdminClient();
   const dataClient = adminClient || supabase;
 
+  // Verify user is agent/admin
+  const { data: profile } = await dataClient
+    .from("users")
+    .select("role")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (!profile || (profile.role !== "agent" && profile.role !== "admin")) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   const body = await request.json();
   const { session_id, property_id, video_capture_id, storage_path, duration_seconds, width, height } = body;
 
   if (!session_id || !property_id || !video_capture_id) {
     return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+  }
+
+  // Verify session exists and belongs to user's org
+  const { data: session } = await dataClient
+    .from("capture_sessions")
+    .select("id, property_id, properties!inner(org_id)")
+    .eq("id", session_id)
+    .maybeSingle();
+
+  if (!session) {
+    return NextResponse.json({ error: "Capture session not found" }, { status: 404 });
+  }
+
+  const sessionOrgId = (session.properties as unknown as { org_id: string | null })?.org_id;
+  if (sessionOrgId) {
+    const { data: membership } = await dataClient
+      .from("organization_members")
+      .select("org_id, role")
+      .eq("user_id", user.id)
+      .eq("org_id", sessionOrgId)
+      .maybeSingle();
+
+    if (!membership || (membership.role !== "owner" && membership.role !== "agent")) {
+      return NextResponse.json(
+        { error: "You don't have access to this session's organization" },
+        { status: 403 }
+      );
+    }
   }
 
   // Verify the file exists in storage
@@ -71,7 +110,7 @@ export async function POST(request: NextRequest) {
     .select("id")
     .eq("session_id", session_id)
     .limit(1)
-    .single();
+    .maybeSingle();
 
   let sceneId = existingScene?.id;
 

@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     .from("capture_sessions")
     .select("id, property_id, status, capture_type")
     .eq("id", session_id)
-    .single();
+    .maybeSingle();
 
   if (sessionError || !session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -84,10 +85,21 @@ export default function VideoProcessingPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Auth guard
+  useEffect(() => {
+    const checkAuth = async () => {
+      const supabase = createClient();
+      if (!supabase) { router.push("/auth/login"); return; }
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { router.push("/auth/login"); return; }
+    };
+    checkAuth();
+  }, [router]);
+
   // Unwrap params
-  useState(() => {
+  useEffect(() => {
     params.then((p) => setSessionId(p.session_id));
-  });
+  }, [params]);
 
   // Poll for status
   const pollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
