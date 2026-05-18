@@ -30,11 +30,11 @@ const PROPERTY_TYPES: { value: PropertyType; label: string }[] = [
 ];
 
 interface PropertyFormProps {
-  onCancel?: () => void;
+  cancelHref?: string;
   mode?: "photo" | "video";
 }
 
-export function PropertyForm({ onCancel, mode = "photo" }: PropertyFormProps) {
+export function PropertyForm({ cancelHref = "/explore", mode = "photo" }: PropertyFormProps) {
   const router = useRouter();
   const isVideoMode = mode === "video";
   const [submitting, setSubmitting] = useState(false);
@@ -257,18 +257,18 @@ export function PropertyForm({ onCancel, mode = "photo" }: PropertyFormProps) {
           )}
         </Button>
 
-        {onCancel && (
-          <Button
-            type="button"
-            variant="ghost"
-            className="h-12 w-full text-base text-muted-foreground"
-            onClick={onCancel}
-            disabled={submitting}
-          >
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-12 w-full text-base text-muted-foreground"
+          asChild
+          disabled={submitting}
+        >
+          <a href={cancelHref}>
             <ArrowLeft className="mr-2 h-4 w-4" />
             Cancel
-          </Button>
-        )}
+          </a>
+        </Button>
       </div>
     </form>
   );

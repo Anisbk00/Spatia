@@ -201,7 +201,7 @@ export default async function NewPropertyPage({
             </CardHeader>
 
             <CardContent>
-              <PropertyForm onCancel={() => {}} mode={isVideoMode ? "video" : "photo"} />
+              <PropertyForm cancelHref="/explore" mode={isVideoMode ? "video" : "photo"} />
             </CardContent>
           </Card>
         </div>
