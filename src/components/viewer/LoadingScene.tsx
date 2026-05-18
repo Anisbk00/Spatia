@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useSyncExternalStore } from "react";
 import { Rotate3d } from "lucide-react";
 
 interface LoadingSceneProps {
@@ -7,7 +8,25 @@ interface LoadingSceneProps {
   progress?: number;
 }
 
+function useIsMobile(): boolean {
+  // Subscribe to nothing — just read once on client
+  const subscribe = () => () => {};
+  const getSnapshot = () => {
+    if (typeof window === "undefined") return false;
+    const isTouchDevice =
+      "ontouchstart" in window ||
+      navigator.maxTouchPoints > 0;
+    const isNarrow = window.matchMedia("(max-width: 768px)").matches;
+    return isTouchDevice || isNarrow;
+  };
+  const getServerSnapshot = () => false;
+
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
 export function LoadingScene({ message = "Loading 3D scene", progress }: LoadingSceneProps) {
+  const isMobile = useIsMobile();
+
   return (
     <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/90">
       {/* Spinning icon */}
@@ -36,9 +55,11 @@ export function LoadingScene({ message = "Loading 3D scene", progress }: Loading
         <p className="mt-2 text-xs text-white/40">{Math.round(progress)}%</p>
       )}
 
-      {/* Tip */}
+      {/* Tip — device-specific */}
       <p className="mt-6 max-w-xs text-center text-xs text-white/30">
-        Use mouse to rotate, scroll to zoom, or touch to navigate
+        {isMobile
+          ? "Touch to navigate, pinch to zoom"
+          : "Use mouse to rotate, scroll to zoom"}
       </p>
     </div>
   );

@@ -26,7 +26,6 @@ LingBot-Map Python API:
 
 from __future__ import annotations
 
-import glob
 import logging
 import os
 import tempfile
@@ -452,8 +451,9 @@ def _generate_simulated_predictions(
 
         world_points[0, i] = world_coords
 
-    # Simulate processing time
-    time.sleep(0.5)
+    # Note: Removed blocking time.sleep() from simulation mode.
+    # The caller should use asyncio.to_thread() if async non-blocking
+    # behavior is needed.
 
     logger.info(f"Simulated predictions generated: {num_frames} frames")
 
@@ -472,16 +472,23 @@ def _generate_simulated_predictions(
 
 
 def _discover_frames(frames_dir: str) -> list[str]:
-    """Find all frame images in a directory, sorted by filename."""
-    extensions = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tif", "*.tiff")
+    """Find all frame images in a directory, sorted by filename.
+
+    Uses os.listdir() with case-insensitive extension matching instead of
+    glob.glob() to avoid case-sensitivity issues on different platforms.
+    """
+    valid_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
     all_paths: list[str] = []
 
-    for ext in extensions:
-        all_paths.extend(glob.glob(os.path.join(frames_dir, ext)))
-        # Also check uppercase
-        all_paths.extend(glob.glob(os.path.join(frames_dir, ext.upper())))
+    try:
+        for entry in os.listdir(frames_dir):
+            ext = os.path.splitext(entry)[1].lower()
+            if ext in valid_extensions:
+                all_paths.append(os.path.join(frames_dir, entry))
+    except OSError:
+        return []
 
-    return sorted(set(all_paths))
+    return sorted(all_paths)
 
 
 def _read_frame_for_size(frame_path: str) -> tuple[int, int]:

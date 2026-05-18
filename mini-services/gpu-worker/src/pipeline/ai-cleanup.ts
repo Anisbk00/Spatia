@@ -8,9 +8,13 @@
 // Uses actual splat count, quality scores, and
 // match coverage from previous pipeline stages
 // to compute noise reduction estimates.
+//
+// Audit fixes applied:
+//   - SIMULATED mode support
 // ============================================
 
 import type { PipelineContext, PipelineStageResult } from "./stages";
+import { SIMULATED } from "../types";
 
 export async function runAISceneCleanup(
   ctx: PipelineContext
@@ -19,6 +23,7 @@ export async function runAISceneCleanup(
   const logs: string[] = [];
 
   logs.push(`[${new Date().toISOString()}] Starting AI scene cleanup`);
+  logs.push(`[${new Date().toISOString()}] Mode: ${SIMULATED ? "simulated" : "real"}`);
 
   const splatCount = Number(ctx.artifacts.splat_count || "50000");
   const qualityBefore = parseFloat(ctx.artifacts.sfm_quality_score || "0.85");

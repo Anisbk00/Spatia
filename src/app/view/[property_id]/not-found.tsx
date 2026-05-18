@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Home, ArrowLeft } from "lucide-react";
 import { SpatiaLogo } from "@/components/SpatiaLogo";
+import Link from "next/link";
 
 export default function ViewNotFound() {
   return (
@@ -25,10 +26,10 @@ export default function ViewNotFound() {
           </p>
           <div className="mt-8 flex justify-center gap-3">
             <Button variant="outline" asChild className="border-white/20 text-white hover:bg-white/10 gap-2">
-              <a href="/explore">
+              <Link href="/explore">
                 <ArrowLeft className="h-4 w-4" />
                 Browse Properties
-              </a>
+              </Link>
             </Button>
           </div>
         </div>

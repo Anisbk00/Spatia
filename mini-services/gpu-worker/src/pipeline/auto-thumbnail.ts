@@ -7,9 +7,13 @@
 // Scores each candidate viewpoint using position
 // heuristics (eye-level height, moderate FOV,
 // facing the largest room) to pick the best angle.
+//
+// Audit fixes applied:
+//   - SIMULATED mode support
 // ============================================
 
 import type { PipelineContext, PipelineStageResult } from "./stages";
+import { SIMULATED } from "../types";
 
 export async function runAutoThumbnail(
   ctx: PipelineContext
@@ -18,9 +22,21 @@ export async function runAutoThumbnail(
   const logs: string[] = [];
 
   logs.push(`[${new Date().toISOString()}] Starting auto thumbnail generation`);
+  logs.push(`[${new Date().toISOString()}] Mode: ${SIMULATED ? "simulated" : "real"}`);
 
-  const cameraPoses = JSON.parse(ctx.artifacts.camera_poses || "[]");
-  const detectedRooms = JSON.parse(ctx.artifacts.detected_rooms || "[]");
+  let cameraPoses: Array<{ position: number[]; fov: number }>;
+  try {
+    cameraPoses = JSON.parse(ctx.artifacts.camera_poses || "[]");
+  } catch {
+    cameraPoses = [];
+  }
+
+  let detectedRooms: Array<{ bounds: { min: number[]; max: number[] }; estimated_area_sqm?: number }>;
+  try {
+    detectedRooms = JSON.parse(ctx.artifacts.detected_rooms || "[]");
+  } catch {
+    detectedRooms = [];
+  }
 
   // Select the best camera angle for the thumbnail
   // In production: render the scene from multiple viewpoints and score them
@@ -49,8 +65,7 @@ export async function runAutoThumbnail(
     // Prefer positions that face the center of the largest room
     if (detectedRooms.length > 0) {
       const largestRoom = detectedRooms.reduce(
-        (max: { estimated_area_sqm: number }, r: { estimated_area_sqm: number }) =>
-          r.estimated_area_sqm > max.estimated_area_sqm ? r : max,
+        (max, r) => ((r.estimated_area_sqm ?? 0) > (max.estimated_area_sqm ?? 0) ? r : max),
         detectedRooms[0]
       );
       if (largestRoom) {

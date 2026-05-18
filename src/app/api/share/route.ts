@@ -85,10 +85,10 @@ export async function POST(request: NextRequest) {
 
   const orgId = orgMembership?.org_id || null;
 
-  // 4. Verify the property exists
+  // 4. Verify the property exists and check org ownership
   const { data: property } = await dataClient
     .from("properties")
-    .select("id")
+    .select("id, org_id")
     .eq("id", body.property_id)
     .maybeSingle();
 
@@ -97,6 +97,22 @@ export async function POST(request: NextRequest) {
       { error: "Property not found" },
       { status: 404 },
     );
+  }
+
+  // 4b. Verify the requesting user's org owns this property
+  if (property.org_id) {
+    const { data: membership } = await dataClient
+      .from("organization_members")
+      .select("id")
+      .eq("org_id", property.org_id)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (!membership) {
+      return NextResponse.json(
+        { error: "You don't have access to this property" },
+        { status: 403 },
+      );
+    }
   }
 
   // 5. Build shared metadata

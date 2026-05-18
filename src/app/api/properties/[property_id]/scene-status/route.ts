@@ -4,6 +4,9 @@ import { getPropertyWithScene } from "@/lib/supabase/property";
 /**
  * GET /api/properties/[property_id]/scene-status
  * Public endpoint for polling scene status (used by 3D viewer when scene is processing)
+ *
+ * Response is explicitly limited to public-safe fields only.
+ * Internal fields such as detailed quality_score breakdowns are excluded.
  */
 export async function GET(
   _request: Request,
@@ -26,7 +29,6 @@ export async function GET(
           status: data.scene.status,
           model_url: data.scene.model_url,
           thumbnail_url: data.scene.thumbnail_url,
-          quality_score: data.scene.quality_score,
         }
       : null,
   });

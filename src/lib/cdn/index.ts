@@ -334,15 +334,17 @@ export class CDNManager {
   }
 
   /**
-   * Compress scene data for web delivery.
+   * Estimate compression savings for scene data.
    *
    * Analyzes scene data and estimates compression ratios.
-   * In production, this would run actual mesh/point cloud compression.
+   * This is an estimation function — it does NOT actually compress data.
+   * In production, actual mesh/point cloud compression would be performed
+   * by the GPU worker pipeline.
    *
    * @param sceneData - The scene data object to analyze
-   * @returns Compression analysis with original/compressed sizes and ratio
+   * @returns Compression estimation with original/estimated-compressed sizes and ratio
    */
-  compressSceneData(sceneData: SceneDataInput): {
+  estimateCompressionSavings(sceneData: SceneDataInput): {
     original: number;
     compressed: number;
     ratio: number;
@@ -363,13 +365,25 @@ export class CDNManager {
         ratio: compressedBytes / originalBytes,
       };
     } catch (err) {
-      console.error("[CDNManager] Error compressing scene data:", err);
+      console.error("[CDNManager] Error estimating compression savings:", err);
       return {
         original: 0,
         compressed: 0,
         ratio: 0,
       };
     }
+  }
+
+  /**
+   * @deprecated Use `estimateCompressionSavings` instead.
+   * Kept as an alias for backward compatibility.
+   */
+  compressSceneData(sceneData: SceneDataInput): {
+    original: number;
+    compressed: number;
+    ratio: number;
+  } {
+    return this.estimateCompressionSavings(sceneData);
   }
 
   /**

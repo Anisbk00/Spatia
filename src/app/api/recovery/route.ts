@@ -66,6 +66,26 @@ export async function POST(request: NextRequest) {
         if (!id) {
           return NextResponse.json({ error: "id is required for session recovery" }, { status: 400 });
         }
+
+        // Verify user has access to this session's org
+        const { data: sess } = await dataClient
+          .from("capture_sessions")
+          .select("property_id, properties!inner(org_id)")
+          .eq("id", id)
+          .maybeSingle();
+        if (sess) {
+          const sessOrgId = (sess.properties as unknown as { org_id: string | null })?.org_id;
+          if (sessOrgId) {
+            const { data: member } = await dataClient
+              .from("organization_members")
+              .select("id")
+              .eq("org_id", sessOrgId)
+              .eq("user_id", user.id)
+              .maybeSingle();
+            if (!member) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+          }
+        }
+
         const result = await recoveryService.recoverSession(id);
         return NextResponse.json({ type: "session", id, result });
       }
@@ -74,6 +94,23 @@ export async function POST(request: NextRequest) {
         if (!id) {
           return NextResponse.json({ error: "id is required for property recovery" }, { status: 400 });
         }
+
+        // Verify user has access to this property's org
+        const { data: prop } = await dataClient
+          .from("properties")
+          .select("org_id")
+          .eq("id", id)
+          .maybeSingle();
+        if (prop?.org_id) {
+          const { data: member } = await dataClient
+            .from("organization_members")
+            .select("id")
+            .eq("org_id", prop.org_id)
+            .eq("user_id", user.id)
+            .maybeSingle();
+          if (!member) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+        }
+
         const result = await recoveryService.recoverProperty(id);
         return NextResponse.json({ type: "property", id, result });
       }
@@ -82,6 +119,26 @@ export async function POST(request: NextRequest) {
         if (!id) {
           return NextResponse.json({ error: "id is required for scene recovery" }, { status: 400 });
         }
+
+        // Verify user has access to this scene's org via property
+        const { data: scn } = await dataClient
+          .from("scenes")
+          .select("property_id, properties!inner(org_id)")
+          .eq("id", id)
+          .maybeSingle();
+        if (scn) {
+          const scnOrgId = (scn.properties as unknown as { org_id: string | null })?.org_id;
+          if (scnOrgId) {
+            const { data: member } = await dataClient
+              .from("organization_members")
+              .select("id")
+              .eq("org_id", scnOrgId)
+              .eq("user_id", user.id)
+              .maybeSingle();
+            if (!member) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+          }
+        }
+
         const result = await recoveryService.recoverScene(id);
         return NextResponse.json({ type: "scene", id, result });
       }
@@ -95,6 +152,14 @@ export async function POST(request: NextRequest) {
       }
 
       case "auto": {
+        // Auto-recovery is restricted to admin users only
+        if (profile.role !== "admin") {
+          return NextResponse.json(
+            { error: "Forbidden — auto recovery requires admin role" },
+            { status: 403 }
+          );
+        }
+
         const report = await recoveryService.autoRecover();
         return NextResponse.json({ type: "auto", report });
       }

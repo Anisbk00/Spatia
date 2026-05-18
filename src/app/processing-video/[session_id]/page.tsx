@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ import {
   Box,
   Sparkles,
   Clock,
+  RefreshCw,
 } from "lucide-react";
 
 interface PipelineStage {
@@ -74,6 +76,9 @@ interface StatusResponse {
   jobs: Array<{ type: string; status: string }>;
 }
 
+const BASE_INTERVAL_MS = 3000;
+const MAX_INTERVAL_MS = 30000;
+
 export default function VideoProcessingPage({
   params,
 }: {
@@ -84,6 +89,7 @@ export default function VideoProcessingPage({
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
 
   // Auth guard
   useEffect(() => {
@@ -101,8 +107,9 @@ export default function VideoProcessingPage({
     params.then((p) => setSessionId(p.session_id));
   }, [params]);
 
-  // Poll for status
-  const pollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Poll for status with exponential backoff
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const currentIntervalRef = useRef(BASE_INTERVAL_MS);
 
   const fetchStatus = useCallback(async () => {
     if (!sessionId) return;
@@ -119,10 +126,14 @@ export default function VideoProcessingPage({
       setStatus(data);
       setError(null);
 
+      // Reset error state and backoff on successful poll
+      setPollError(null);
+      currentIntervalRef.current = BASE_INTERVAL_MS;
+
       // If complete, redirect to viewer
       if (data.stage === "completed" && data.property_id) {
-        if (pollInterval.current) {
-          clearInterval(pollInterval.current);
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
         }
         setTimeout(() => {
           router.push(`/view/${data.property_id}`);
@@ -130,6 +141,17 @@ export default function VideoProcessingPage({
       }
     } catch (err) {
       console.error("[ProcessingVideo] Status fetch error:", err);
+      setPollError("Connection issue — retrying...");
+
+      // Exponential backoff
+      currentIntervalRef.current = Math.min(
+        currentIntervalRef.current * 2,
+        MAX_INTERVAL_MS
+      );
+
+      // Restart interval with new backoff
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = setInterval(fetchStatus, currentIntervalRef.current);
     } finally {
       setLoading(false);
     }
@@ -139,11 +161,11 @@ export default function VideoProcessingPage({
     if (!sessionId) return;
 
     fetchStatus();
-    pollInterval.current = setInterval(fetchStatus, 3000);
+    pollIntervalRef.current = setInterval(fetchStatus, currentIntervalRef.current);
 
     return () => {
-      if (pollInterval.current) {
-        clearInterval(pollInterval.current);
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
       }
     };
   }, [sessionId, fetchStatus]);
@@ -181,13 +203,13 @@ export default function VideoProcessingPage({
       {/* Content */}
       <main className="flex-1 px-4 py-6 sm:px-6">
         <div className="mx-auto max-w-lg">
-          <a
+          <Link
             href="/explore"
             className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             <ArrowLeft className="h-4 w-4" />
             Back to Explore
-          </a>
+          </Link>
 
           <Card className="border-0 shadow-xl shadow-emerald-900/5">
             <CardHeader className="pb-2">
@@ -338,6 +360,28 @@ export default function VideoProcessingPage({
                   </div>
                 </div>
               </div>
+
+              {/* Polling connection error */}
+              {pollError && !isFailed && !isCompleted && (
+                <Alert variant="destructive">
+                  <RefreshCw className="h-4 w-4" />
+                  <AlertDescription className="flex items-center justify-between">
+                    <span>{pollError}</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="ml-2 h-7 shrink-0"
+                      onClick={() => {
+                        setPollError(null);
+                        currentIntervalRef.current = BASE_INTERVAL_MS;
+                        fetchStatus();
+                      }}
+                    >
+                      Retry Now
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
 
               {/* Error state */}
               {isFailed && status?.error && (

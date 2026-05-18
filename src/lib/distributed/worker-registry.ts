@@ -193,6 +193,10 @@ export class WorkerRegistry {
 
   /**
    * Mark workers with heartbeats older than 5 minutes as 'offline'.
+   * Additionally, finds any jobs that were running on those now-offline
+   * workers and re-queues them (sets status back to "queued", started_at
+   * to null) so they can be picked up by healthy workers.
+   *
    * Returns the count of workers marked as stale.
    */
   async markStaleWorkers(): Promise<number> {
@@ -203,18 +207,18 @@ export class WorkerRegistry {
       Date.now() - HEARTBEAT_OFFLINE_MS
     ).toISOString();
 
-    // First get the count of stale workers
-    const { count, error: countError } = await supabase
+    // First get the stale workers so we can identify their IDs for job recovery
+    const { data: staleWorkers, error: fetchError } = await supabase
       .from("workers")
-      .select("*", { count: "exact", head: true })
+      .select("worker_id, current_job_count")
       .in("status", ["idle", "busy", "draining"])
       .lt("last_heartbeat", offlineCutoff);
 
-    if (countError || !count) {
+    if (fetchError || !staleWorkers || staleWorkers.length === 0) {
       return 0;
     }
 
-    // Update them to offline
+    // Mark them as offline
     const { error } = await supabase
       .from("workers")
       .update({ status: "offline" })
@@ -226,6 +230,52 @@ export class WorkerRegistry {
       return 0;
     }
 
-    return count;
+    // Re-queue jobs that were running on the now-offline workers.
+    // NOTE: processing_jobs doesn't have a worker_id column, so we can't
+    // directly match jobs to workers. Instead, we re-queue all running jobs
+    // that have been running for longer than HEARTBEAT_OFFLINE_MS as a
+    // heuristic. This is a best-effort approach — in a more sophisticated
+    // system, a worker_id column on processing_jobs would enable exact matching.
+    try {
+      // Only look for jobs that were started before the offline cutoff,
+      // meaning they were likely running on one of the now-offline workers
+      const { data: orphanedJobs, error: jobsError } = await supabase
+        .from("processing_jobs")
+        .select("id, retry_count")
+        .eq("status", "running")
+        .lt("started_at", offlineCutoff);
+
+      if (!jobsError && orphanedJobs && orphanedJobs.length > 0) {
+        for (const job of orphanedJobs) {
+          const newRetryCount = (job.retry_count ?? 0) + 1;
+
+          const { error: updateError } = await supabase
+            .from("processing_jobs")
+            .update({
+              status: "queued",
+              started_at: null,
+              retry_count: newRetryCount,
+            })
+            .eq("id", job.id);
+
+          if (updateError) {
+            console.error(
+              `[WorkerRegistry] Failed to re-queue orphaned job ${job.id}:`,
+              updateError,
+            );
+          } else {
+            console.info(
+              `[WorkerRegistry] Re-queued orphaned job ${job.id} (retry #${newRetryCount}) ` +
+              `due to worker going offline`,
+            );
+          }
+        }
+      }
+    } catch (err) {
+      // Don't let job recovery failure prevent the stale worker marking from succeeding
+      console.error("[WorkerRegistry] Error during orphaned job recovery:", err);
+    }
+
+    return staleWorkers.length;
   }
 }

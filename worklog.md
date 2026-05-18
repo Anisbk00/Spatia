@@ -331,3 +331,26 @@ Stage Summary:
   - MINOR: 55 issues
 - Key categories: fake pipeline stubs, race conditions, missing auth/org checks, non-atomic DB ops, broken state machines, no cleanup logic, broken rate limiting, silent error swallowing, hardcoded billing
 - Full audit report delivered to user
+
+---
+Task ID: 11
+Agent: Main + 8 Subagents
+Task: Fix ALL 174 audit issues across the entire reconstruction pipeline
+
+Work Log:
+- Launched 8 parallel fix agents covering all subsystems
+- Agent 1: Fixed processing-worker (12 fixes) — claimJob verification, atomic retry_count, error propagation, status guards, graceful shutdown, seeded PRNG, structured logging
+- Agent 2: Fixed gpu-worker (12+ fixes) — ternary bug, JSON.parse safety, imports, cost-before-completion ordering, stage timeouts, worker_id tracking, type unification
+- Agent 3: Fixed lingbot-worker (11+ fixes) — atomic fail_job via RPC, frame cleanup, public buckets, concurrent uploads, thread-safe globals, model caching, disk space checks
+- Agent 4: Fixed auto-scaler (11 fixes) — priority_order instead of created_at mutation, real health check, free tier logic, self-scheduling, state passing, config validation, batched updates
+- Agent 5: Fixed core libs (17 files) — rate limiter (in-memory), event listener leak, job dedup TOCTOU, pipeline recovery, worker status ternary, priority scheduling, stale job re-queue, throttle bypass, upload resume loop, monitoring query, state machine types
+- Agent 6: Fixed API routes (16 fixes) — auth on status endpoints, org ownership on start-job/finish/recovery/share, race condition in capture/finish, video confirm fail-fast, role checks, scene-status filtering, error sanitization
+- Agent 7: Fixed frontend (11 fixes) — exponential backoff on polling, stale detection, error display, processing indicator status prop, Link navigation, ProgressBar division guard, clipboard API, capture cleanup, device detection
+- Agent 8: Created SQL migration v4 (17 fixes) — public-read policies, system_logs RLS, org member self-escalation, WITH CHECK clauses, admin-only functions, job dedup unique index, CHECK constraints, state machine enforcement, cancelled/timed_out states, referral code unique, invoices FK, handle_new_user idempotency, SECURITY DEFINER, referral code loop guard, org_id NOT NULL
+
+Stage Summary:
+- All 174 issues addressed across 80+ files
+- Lint passes with zero errors
+- Dev server compiles and runs successfully
+- SQL migration at sql/fix_rls_policies_v4.sql — USER MUST RUN IN SUPABASE SQL EDITOR
+- Key hardening: atomic DB ops, org ownership enforcement, auth on all endpoints, graceful shutdown, error propagation, deterministic pipeline, stale detection, backoff polling

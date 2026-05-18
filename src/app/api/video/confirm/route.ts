@@ -62,17 +62,44 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Verify the file exists in storage
-  const { data: fileData, error: fileError } = await dataClient.storage
-    .from("property-captures")
-    .list(`video-captures/${session_id}`);
+  // Verify the specific expected file exists in storage (not just any files in the directory)
+  // Fetch the video capture record to get the expected storage_path
+  const { data: vcRecord } = await dataClient
+    .from("video_captures")
+    .select("storage_path")
+    .eq("id", video_capture_id)
+    .maybeSingle();
 
-  if (fileError || !fileData || fileData.length === 0) {
-    console.error("[VideoConfirm] File not found in storage:", fileError);
-    return NextResponse.json({ error: "Video file not found in storage" }, { status: 400 });
+  const expectedStoragePath = vcRecord?.storage_path || storage_path;
+  if (!expectedStoragePath) {
+    return NextResponse.json({ error: "No storage path specified" }, { status: 400 });
   }
 
-  // Update video_captures with metadata
+  // Extract directory and expected file name from the storage path
+  const lastSlashIndex = expectedStoragePath.lastIndexOf("/");
+  if (lastSlashIndex === -1) {
+    return NextResponse.json({ error: "Invalid storage path format" }, { status: 400 });
+  }
+  const directory = expectedStoragePath.substring(0, lastSlashIndex);
+  const expectedFileName = expectedStoragePath.substring(lastSlashIndex + 1);
+
+  const { data: fileData, error: fileError } = await dataClient.storage
+    .from("property-captures")
+    .list(directory);
+
+  if (fileError) {
+    console.error("[VideoConfirm] Storage list error:", fileError);
+    return NextResponse.json({ error: "Failed to verify file in storage" }, { status: 400 });
+  }
+
+  // Verify the specific expected file exists in the directory listing
+  const expectedFileExists = fileData?.some(f => f.name === expectedFileName);
+  if (!expectedFileExists) {
+    console.error("[VideoConfirm] Expected file not found:", expectedFileName);
+    return NextResponse.json({ error: "Expected video file not found in storage" }, { status: 400 });
+  }
+
+  // Update video_captures with metadata — fail-fast on error
   const { error: vcUpdateError } = await dataClient
     .from("video_captures")
     .update({
@@ -86,9 +113,10 @@ export async function POST(request: NextRequest) {
 
   if (vcUpdateError) {
     console.error("[VideoConfirm] Video capture update error:", vcUpdateError);
+    return NextResponse.json({ error: "Failed to update video capture" }, { status: 500 });
   }
 
-  // Update capture_sessions → processing
+  // Update capture_sessions → processing — fail-fast on error
   const { error: sessionError } = await dataClient
     .from("capture_sessions")
     .update({ status: "processing" })
@@ -96,6 +124,7 @@ export async function POST(request: NextRequest) {
 
   if (sessionError) {
     console.error("[VideoConfirm] Session update error:", sessionError);
+    return NextResponse.json({ error: "Failed to update session" }, { status: 500 });
   }
 
   // Update properties → processing

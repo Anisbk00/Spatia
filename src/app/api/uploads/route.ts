@@ -10,6 +10,9 @@ interface PropertyOrgJoinResult {
   org_id: string | null;
 }
 
+// Valid status values for upload operations
+const VALID_UPLOAD_STATUSES = ["pending", "uploading", "uploaded", "failed", "cancelled"] as const;
+
 // -------------------------------------------
 // POST — Create an upload_operation record
 // -------------------------------------------
@@ -218,6 +221,38 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // When only propertyId is provided, verify the user's org owns the property
+  if (!sessionId && propertyId) {
+    const { data: property } = await dataClient
+      .from("properties")
+      .select("org_id")
+      .eq("id", propertyId)
+      .maybeSingle();
+
+    if (!property) {
+      return NextResponse.json(
+        { error: "Property not found" },
+        { status: 404 }
+      );
+    }
+
+    if (property.org_id) {
+      const { data: membership } = await dataClient
+        .from("organization_members")
+        .select("org_id")
+        .eq("user_id", user.id)
+        .eq("org_id", property.org_id)
+        .maybeSingle();
+
+      if (!membership) {
+        return NextResponse.json(
+          { error: "You don't have access to this property" },
+          { status: 403 }
+        );
+      }
+    }
+  }
+
   // 4. Fetch upload operations
   let query = dataClient
     .from("upload_operations")
@@ -294,6 +329,14 @@ export async function PATCH(request: NextRequest) {
   if (!operationId) {
     return NextResponse.json(
       { error: "operationId is required" },
+      { status: 422 }
+    );
+  }
+
+  // 2b. Validate status against allowed enum values
+  if (status !== undefined && !VALID_UPLOAD_STATUSES.includes(status as typeof VALID_UPLOAD_STATUSES[number])) {
+    return NextResponse.json(
+      { error: `Invalid status. Must be one of: ${VALID_UPLOAD_STATUSES.join(", ")}` },
       { status: 422 }
     );
   }

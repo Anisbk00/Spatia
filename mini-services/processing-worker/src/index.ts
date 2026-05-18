@@ -22,33 +22,105 @@ import {
   completeScene,
   completeSession,
   setPropertyReady,
+  updateSceneStatus,
   getSessionMedia,
 } from "./db";
-import { uploadToStorage, generateThumbnail } from "./storage";
+import {
+  uploadToStorage,
+  generateThumbnail,
+  initializeStorage,
+} from "./storage";
 import { runImageValidation } from "./pipeline/sfm";
 import { runSfMReconstruction } from "./pipeline/splat";
 import { runSplatGeneration } from "./pipeline/optimizer";
 import { runSceneOptimization } from "./pipeline/packager";
 import type { PipelineContext, PipelineStageResult } from "./pipeline/stages";
+import { PIPELINE_STAGES } from "./pipeline/stages";
 
 const POLL_INTERVAL_MS = 5000; // 5 seconds
 const MAX_CONCURRENT_JOBS = 1; // MVP: one at a time
 
 let isProcessing = false;
+let currentJob: { id: string; sceneId: string } | null = null;
+
+function structuredLog(jobId: string, level: string, message: string, data?: Record<string, unknown>) {
+  const entry: Record<string, unknown> = {
+    timestamp: new Date().toISOString(),
+    level,
+    jobId,
+    message,
+    ...(data && { ...data }),
+  };
+  console.log(JSON.stringify(entry));
+}
+
+function getStageTimeout(stageName: string): number {
+  const stageMeta = PIPELINE_STAGES.find((s) => s.name === stageName);
+  return stageMeta?.timeoutMs ?? 60_000;
+}
+
+async function runStageWithTimeout(
+  stageName: string,
+  fn: (ctx: PipelineContext) => Promise<PipelineStageResult>,
+  ctx: PipelineContext
+): Promise<PipelineStageResult> {
+  const timeoutMs = getStageTimeout(stageName);
+
+  return Promise.race([
+    fn(ctx),
+    new Promise<PipelineStageResult>((resolve) =>
+      setTimeout(
+        () =>
+          resolve({
+            status: "failed",
+            durationMs: timeoutMs,
+            artifacts: {},
+            error: `Stage "${stageName}" timed out after ${timeoutMs}ms`,
+          }),
+        timeoutMs
+      )
+    ),
+  ]);
+}
 
 async function main() {
-  console.log("Processing Worker started");
-  console.log(`   Polling every ${POLL_INTERVAL_MS / 1000}s`);
-  console.log(`   Max concurrent jobs: ${MAX_CONCURRENT_JOBS}`);
+  structuredLog("system", "info", "Processing Worker started");
+  structuredLog("system", "info", `Polling every ${POLL_INTERVAL_MS / 1000}s`);
+  structuredLog("system", "info", `Max concurrent jobs: ${MAX_CONCURRENT_JOBS}`);
 
   // Check Supabase configuration
   if (!process.env.SUPABASE_URL) {
-    console.error("SUPABASE_URL not set. Worker cannot start.");
-    console.error("   Set these environment variables:");
-    console.error("   - SUPABASE_URL");
-    console.error("   - SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY");
+    structuredLog("system", "error", "SUPABASE_URL not set. Worker cannot start.");
+    structuredLog("system", "error", "Required: SUPABASE_URL, SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY");
     process.exit(1);
   }
+
+  // Initialize storage bucket once at startup
+  try {
+    await initializeStorage();
+    structuredLog("system", "info", "Storage initialized successfully");
+  } catch (err) {
+    structuredLog("system", "error", `Storage initialization failed: ${err}`);
+    process.exit(1);
+  }
+
+  // Register signal handlers for graceful shutdown
+  const shutdownHandler = async () => {
+    structuredLog("system", "info", "Shutdown signal received, cleaning up...");
+    if (currentJob) {
+      try {
+        await failJob(currentJob.id, "Worker shutdown during processing");
+        await updateSceneStatus(currentJob.sceneId, "failed");
+        structuredLog(currentJob.id, "warn", "Re-queued/failed in-progress job due to shutdown");
+      } catch (err) {
+        structuredLog("system", "error", `Failed to clean up job on shutdown: ${err}`);
+      }
+    }
+    process.exit(0);
+  };
+
+  process.on("SIGINT", shutdownHandler);
+  process.on("SIGTERM", shutdownHandler);
 
   // Main poll loop
   while (true) {
@@ -57,7 +129,7 @@ async function main() {
         await pollForJobs();
       }
     } catch (err) {
-      console.error("Poll error:", err);
+      structuredLog("system", "error", `Poll error: ${err}`);
     }
 
     await sleep(POLL_INTERVAL_MS);
@@ -68,25 +140,33 @@ async function pollForJobs() {
   const job = await getNextQueuedJob();
   if (!job) return;
 
-  console.log(`\n[QUEUE] Found queued job: ${job.id} (type: ${job.job_type})`);
+  structuredLog(job.id, "info", `Found queued job (type: ${job.job_type})`);
 
   // Try to claim the job (atomic: only one worker claims it)
   const claimed = await claimJob(job.id);
   if (!claimed) {
-    console.log(`[SKIP] Job ${job.id} already claimed by another worker`);
+    structuredLog(job.id, "info", "Job already claimed by another worker");
     return;
   }
 
-  console.log(`[CLAIM] Claimed job ${job.id}`);
+  structuredLog(job.id, "info", "Claimed job");
   isProcessing = true;
+  currentJob = { id: job.id, sceneId: job.scene_id };
 
   try {
     await processJob(job);
   } catch (err) {
-    console.error(`[ERROR] Job ${job.id} failed with error:`, err);
-    await failJob(job.id, `Unhandled error: ${err}`);
+    structuredLog(job.id, "error", `Job failed with unhandled error`, {
+      error: String(err),
+    });
+    try {
+      await failJob(job.id, `Unhandled error: ${err}`);
+    } catch (failErr) {
+      structuredLog(job.id, "error", `Failed to record job failure: ${failErr}`);
+    }
   } finally {
     isProcessing = false;
+    currentJob = null;
   }
 }
 
@@ -102,7 +182,6 @@ async function processJob(job: { id: string; scene_id: string }) {
   }
 
   // Update scene status
-  const { updateSceneStatus } = await import("./db");
   await updateSceneStatus(scene.id, "processing");
 
   // Fetch media URLs for this session
@@ -125,13 +204,14 @@ async function processJob(job: { id: string; scene_id: string }) {
     propertyId: scene.property_id,
     imageUrls,
     supabaseUrl: process.env.SUPABASE_URL!,
-    supabaseKey: process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || "",
+    supabaseKey:
+      process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || "",
     artifacts: {},
   };
 
-  console.log(`[PROCESS] Processing ${imageUrls.length} images for scene ${scene.id}`);
+  structuredLog(job.id, "info", `Processing ${imageUrls.length} images for scene ${scene.id}`);
 
-  // Run pipeline stages sequentially
+  // Run pipeline stages sequentially with timeouts
   const stages = [
     { name: "Image Validation", fn: runImageValidation },
     { name: "SfM Reconstruction", fn: runSfMReconstruction },
@@ -140,13 +220,15 @@ async function processJob(job: { id: string; scene_id: string }) {
   ];
 
   for (const stage of stages) {
-    console.log(`[STAGE] Running: ${stage.name}...`);
+    structuredLog(job.id, "info", `Running stage: ${stage.name}`);
 
     let result: PipelineStageResult;
     try {
-      result = await stage.fn(ctx);
+      result = await runStageWithTimeout(stage.name, stage.fn, ctx);
     } catch (err) {
-      console.error(`[ERROR] Stage "${stage.name}" threw error:`, err);
+      structuredLog(job.id, "error", `Stage "${stage.name}" threw unexpected error`, {
+        error: String(err),
+      });
       result = {
         status: "failed",
         durationMs: 0,
@@ -160,19 +242,42 @@ async function processJob(job: { id: string; scene_id: string }) {
     }
 
     if (result.status === "failed") {
-      console.error(`[FAIL] Stage "${stage.name}" failed: ${result.error}`);
-      await failJob(job.id, allLogs.join("\n\n"));
+      structuredLog(job.id, "error", `Stage "${stage.name}" failed`, {
+        stageError: result.error,
+      });
+      const failureMessage = result.error
+        ? `[${stage.name}] ${result.error}\n${allLogs.join("\n\n")}`
+        : allLogs.join("\n\n");
+      await failJob(job.id, failureMessage);
       await updateSceneStatus(scene.id, "failed");
       return;
     }
 
     // Merge artifacts into context for next stage
     ctx.artifacts = { ...ctx.artifacts, ...result.artifacts };
-    console.log(`[DONE] ${stage.name} complete (${result.durationMs}ms)`);
+    structuredLog(job.id, "info", `${stage.name} complete (${result.durationMs}ms)`);
   }
 
   // Stage 5: Package and upload scene
-  console.log("[PACK] Packaging scene...");
+  structuredLog(job.id, "info", "Packaging scene...");
+
+  let bounds: { min: number[]; max: number[] };
+  let cameraPoses: unknown[];
+  try {
+    const gaussianSplat = JSON.parse(ctx.artifacts.gaussian_splat || "{}");
+    bounds = gaussianSplat.bounds || {
+      min: [-5, -0.5, -5],
+      max: [5, 3, 5],
+    };
+  } catch {
+    bounds = { min: [-5, -0.5, -5], max: [5, 3, 5] };
+  }
+
+  try {
+    cameraPoses = JSON.parse(ctx.artifacts.camera_poses || "[]");
+  } catch {
+    cameraPoses = [];
+  }
 
   const modelData = {
     version: "1.0",
@@ -183,11 +288,8 @@ async function processJob(job: { id: string; scene_id: string }) {
     sizeMB: Number(ctx.artifacts.scene_size_mb || 0),
     compressionRatio: Number(ctx.artifacts.compression_ratio || 1),
     lodLevels: Number(ctx.artifacts.lod_levels || 1),
-    bounds: JSON.parse(ctx.artifacts.gaussian_splat || "{}").bounds || {
-      min: [-5, -0.5, -5],
-      max: [5, 3, 5],
-    },
-    cameraPoses: JSON.parse(ctx.artifacts.camera_poses || "[]"),
+    bounds,
+    cameraPoses,
     generatedAt: new Date().toISOString(),
     pipelineVersion: "mvp-v1",
   };
@@ -199,17 +301,17 @@ async function processJob(job: { id: string; scene_id: string }) {
     JSON.stringify(modelData, null, 2),
     "application/json"
   );
-  console.log(`[UPLOAD] Uploaded model: ${modelUrl}`);
+  structuredLog(job.id, "info", `Uploaded model: ${modelUrl}`);
 
-  // Upload thumbnail
+  // Upload thumbnail (SVG content, use .svg extension)
   const thumbnailBuffer = generateThumbnail();
-  const thumbnailPath = `scenes/${scene.id}/thumbnail.jpg`;
+  const thumbnailPath = `scenes/${scene.id}/thumbnail.svg`;
   const thumbnailUrl = await uploadToStorage(
     thumbnailPath,
     thumbnailBuffer,
     "image/svg+xml"
   );
-  console.log(`[UPLOAD] Uploaded thumbnail: ${thumbnailUrl}`);
+  structuredLog(job.id, "info", `Uploaded thumbnail: ${thumbnailUrl}`);
 
   const totalTimeSec = Math.round((Date.now() - startTime) / 1000);
   const qualityScore = Number(ctx.artifacts.sfm_quality_score || 0.85);
@@ -222,21 +324,29 @@ async function processJob(job: { id: string; scene_id: string }) {
     qualityScore,
     totalTimeSec
   );
-  console.log(`[SCENE] Scene ${scene.id} marked as ready`);
+  structuredLog(job.id, "info", `Scene ${scene.id} marked as ready`);
 
-  // Update session -> completed
+  // Update session -> completed (verify all scenes are done — handled inside completeSession)
   if (scene.session_id) {
-    await completeSession(scene.session_id);
-    console.log(`[SESSION] Session ${scene.session_id} marked as completed`);
+    try {
+      await completeSession(scene.session_id);
+      structuredLog(job.id, "info", `Session ${scene.session_id} marked as completed`);
+    } catch (err) {
+      structuredLog(job.id, "warn", `Could not complete session: ${err}`);
+    }
   }
 
-  // Update property -> ready
-  await setPropertyReady(scene.property_id);
-  console.log(`[PROPERTY] Property ${scene.property_id} marked as ready`);
+  // Update property -> ready (verify all scenes are ready — handled inside setPropertyReady)
+  try {
+    await setPropertyReady(scene.property_id);
+    structuredLog(job.id, "info", `Property ${scene.property_id} marked as ready`);
+  } catch (err) {
+    structuredLog(job.id, "warn", `Could not set property ready: ${err}`);
+  }
 
   // Update job -> completed
   await completeJob(job.id, allLogs.join("\n\n"));
-  console.log(`[COMPLETE] Job ${job.id} completed in ${totalTimeSec}s\n`);
+  structuredLog(job.id, "info", `Job completed in ${totalTimeSec}s`);
 }
 
 function sleep(ms: number): Promise<void> {

@@ -158,6 +158,7 @@ export async function deleteLastMedia(params: {
 export class UploadQueue {
   private queue: QueuedUpload[] = [];
   private processing = false;
+  private aborted = false;
   private sessionId: string;
   private propertyId: string;
   private onQueueUpdate: (queue: QueuedUpload[]) => void;
@@ -173,6 +174,8 @@ export class UploadQueue {
   }
 
   add(file: File, orderIndex: number) {
+    if (this.aborted) return;
+
     const item: QueuedUpload = {
       file,
       sessionId: this.sessionId,
@@ -187,14 +190,16 @@ export class UploadQueue {
   }
 
   private notify() {
-    this.onQueueUpdate([...this.queue]);
+    if (!this.aborted) {
+      this.onQueueUpdate([...this.queue]);
+    }
   }
 
   private async process() {
-    if (this.processing) return;
+    if (this.processing || this.aborted) return;
     this.processing = true;
 
-    while (this.queue.some((i) => i.status === "pending" || i.status === "failed")) {
+    while (!this.aborted && this.queue.some((i) => i.status === "pending" || i.status === "failed")) {
       const item = this.queue.find(
         (i) => i.status === "pending" || (i.status === "failed" && i.retryCount < 3)
       );
@@ -222,6 +227,23 @@ export class UploadQueue {
       this.notify();
     }
 
+    this.processing = false;
+  }
+
+  /**
+   * Abort all pending uploads and clear the queue.
+   * In-flight uploads will complete but their results will be discarded.
+   * Prevents any new items from being processed or added.
+   */
+  dispose() {
+    this.aborted = true;
+    // Mark any pending items as failed so they don't get picked up
+    for (const item of this.queue) {
+      if (item.status === "pending") {
+        item.status = "failed";
+      }
+    }
+    this.queue = [];
     this.processing = false;
   }
 

@@ -7,9 +7,13 @@
 // Computes feature extraction estimates, match
 // pair counts, and camera poses based on actual
 // validated image data from the previous stage.
+//
+// Audit fixes applied:
+//   - Math.random() replaced with seeded PRNG
 // ============================================
 
 import type { PipelineContext, PipelineStageResult } from "./stages";
+import { createSeededRandom, SIMULATED } from "../types";
 
 interface CameraPose {
   position: [number, number, number];
@@ -27,8 +31,10 @@ export async function runSfMReconstruction(
 ): Promise<PipelineStageResult> {
   const startTime = Date.now();
   const logs: string[] = [];
+  const seededRandom = createSeededRandom(ctx.sceneId);
 
   logs.push(`[${new Date().toISOString()}] Starting SfM reconstruction`);
+  logs.push(`[${new Date().toISOString()}] Mode: ${SIMULATED ? "simulated" : "real"}`);
 
   const imageCount = Number(ctx.artifacts.valid_image_count || ctx.imageUrls.length);
 
@@ -46,7 +52,8 @@ export async function runSfMReconstruction(
   const cameraPoses: CameraPose[] = [];
   for (let i = 0; i < imageCount; i++) {
     const angle = (i / imageCount) * Math.PI * 2;
-    const radius = 2 + Math.random() * 2; // Variable radius for more realistic placement
+    // FIX: Use seeded PRNG instead of Math.random()
+    const radius = 2 + seededRandom() * 2; // Variable radius for more realistic placement
     cameraPoses.push({
       position: [
         Math.cos(angle) * radius,
@@ -54,7 +61,7 @@ export async function runSfMReconstruction(
         Math.sin(angle) * radius,
       ],
       rotation: [0, -angle + Math.PI, 0], // Look toward center
-      fov: 60 + Math.floor(Math.random() * 20), // 60-80 FOV range
+      fov: 60 + Math.floor(seededRandom() * 20), // 60-80 FOV range
     });
   }
   logs.push(`[${new Date().toISOString()}] Estimated ${cameraPoses.length} camera positions`);

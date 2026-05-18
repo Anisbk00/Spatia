@@ -9,6 +9,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import type { Worker } from "@/lib/types";
+import { MAX_RETRIES } from "@/lib/job-queue/index";
 import { WorkerRegistry } from "./worker-registry";
 import { LoadBalancer } from "./load-balancer";
 
@@ -67,6 +68,8 @@ export class JobDispatcher {
    * Assign a job to a specific worker.
    * Uses the dispatch_job_to_worker RPC if available,
    * otherwise falls back to a direct update.
+   *
+   * Verifies that the UPDATE actually matched a row (idempotency guard).
    */
   async assignJobToWorker(
     jobId: string,
@@ -86,7 +89,8 @@ export class JobDispatcher {
       return rpcResult !== false;
     }
 
-    // Fallback: direct update if RPC doesn't exist
+    // Fallback: direct update if RPC doesn't exist.
+    // Use WHERE status = 'queued' to ensure atomic claim.
     const { error } = await supabase
       .from("processing_jobs")
       .update({
@@ -101,7 +105,19 @@ export class JobDispatcher {
       return false;
     }
 
-    // Update worker status to busy and increment job count
+    // Verify the update actually matched a row (idempotency check)
+    const { data: updatedJob } = await supabase
+      .from("processing_jobs")
+      .select("status")
+      .eq("id", jobId)
+      .single();
+
+    if (!updatedJob || updatedJob.status !== "running") {
+      // Another worker claimed it first — don't update worker count
+      return false;
+    }
+
+    // Update worker status and increment job count
     const { data: worker } = await supabase
       .from("workers")
       .select("current_job_count, max_concurrent_jobs")
@@ -111,7 +127,7 @@ export class JobDispatcher {
     if (worker) {
       const newJobCount = (worker.current_job_count ?? 0) + 1;
       const newStatus: Worker["status"] =
-        newJobCount >= (worker.max_concurrent_jobs ?? 1) ? "busy" : "busy";
+        newJobCount >= (worker.max_concurrent_jobs ?? 1) ? "busy" : "idle";
 
       await supabase
         .from("workers")
@@ -225,10 +241,9 @@ export class JobDispatcher {
    * and requeue them so they can be picked up by healthy workers.
    * Returns the count of requeued jobs.
    *
-   * Instead of matching jobs to offline workers via worker_id
-   * (the processing_jobs table does not have a worker_id column),
-   * this method finds running jobs whose started_at is older than
-   * the timeout threshold and requeues them.
+   * Since processing_jobs doesn't have a worker_id column,
+   * this finds running jobs whose started_at is older than the
+   * timeout threshold and requeues them.
    */
   async requeueOrphanedJobs(): Promise<number> {
     const supabase = await createClient();
@@ -249,14 +264,15 @@ export class JobDispatcher {
       return 0;
     }
 
-    // Requeue each stuck job with incremented retry_count
+    // Requeue each stuck job with incremented retry_count.
+    // Uses the centralized MAX_RETRIES from job-queue/index.ts.
     let requeuedCount = 0;
 
     for (const job of stuckJobs) {
       const newRetryCount = (job.retry_count ?? 0) + 1;
 
       // If retry limit exceeded, mark as failed instead
-      if (newRetryCount >= 3) {
+      if (newRetryCount >= MAX_RETRIES) {
         const { error: failError } = await supabase
           .from("processing_jobs")
           .update({
@@ -312,20 +328,49 @@ export class JobDispatcher {
     const delayFree = await this.shouldDelayFreeTier();
 
     if (delayFree) {
-      // Try to find business/pro tier jobs first
-      const { data, error } = await supabase
+      // Try to find paid-tier (non-free) jobs first by joining through
+      // scenes → properties → organizations and filtering on plan type.
+      const { data: paidJobs, error: paidError } = await supabase
         .from("processing_jobs")
-        .select("id, scene_id, job_type")
+        .select(`
+          id, scene_id, job_type,
+          scenes (
+            property_id,
+            properties (
+              org_id,
+              organizations ( plan )
+            )
+          )
+        `)
         .eq("status", "queued")
         .order("created_at", { ascending: true })
-        .limit(1)
-        .single();
+        .limit(10);
 
-      if (!error && data) return data;
+      if (!paidError && paidJobs && paidJobs.length > 0) {
+        // Filter to only paid tier jobs (plan != 'free')
+        const paidTierJob = paidJobs.find((job) => {
+          // Navigate the nested join result: job → scenes → properties → organizations → plan
+          const raw = job as unknown as Record<string, unknown>;
+          const scenes = raw.scenes as Record<string, unknown> | null | undefined;
+          const props = scenes?.properties as Record<string, unknown> | null | undefined;
+          const org = props?.organizations as Record<string, unknown> | null | undefined;
+          const plan = org?.plan as string | null;
+          return !!plan && plan !== "free";
+        });
 
-      // If no paid jobs, fall through to any queued job
+        if (paidTierJob) {
+          return {
+            id: paidTierJob.id as string,
+            scene_id: paidTierJob.scene_id as string,
+            job_type: paidTierJob.job_type as string,
+          };
+        }
+
+        // No paid jobs found, fall through to any queued job
+      }
     }
 
+    // Fall through: get any queued job (FIFO)
     const { data, error } = await supabase
       .from("processing_jobs")
       .select("id, scene_id, job_type")

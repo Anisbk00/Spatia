@@ -187,7 +187,56 @@ export interface ProcessingJob {
   started_at: string | null;
   finished_at: string | null;
   retry_count: number;
+  created_at: string;
 }
+
+// ============================================
+// State Machine Transition Maps
+// ============================================
+// Documented valid transitions for job and scene status.
+// These are reference maps — not enforced at compile time,
+// but should be validated in business logic before transitions.
+
+/**
+ * Valid job status transitions.
+ *
+ * queued  → running   (worker claims the job)
+ * queued  → failed    (manual cancellation or system error)
+ * running → completed (job succeeded)
+ * running → queued    (stuck job recovery / retry)
+ * running → failed    (job failed after retries exhausted)
+ * failed  → queued    (manual retry)
+ * failed  → completed (manual override, rare)
+ *
+ * Terminal states: completed, failed
+ */
+export const VALID_JOB_TRANSITIONS = {
+  queued: ["running", "failed"],
+  running: ["completed", "queued", "failed"],
+  completed: [], // terminal
+  failed: ["queued", "completed"], // retry or manual override
+} as const satisfies Record<JobStatus, readonly JobStatus[]>;
+
+/**
+ * Valid scene status transitions.
+ *
+ * queued     → processing (job picked up by worker)
+ * queued     → failed     (pre-processing validation failure)
+ * processing → ready      (scene generation completed)
+ * processing → failed     (scene generation failed)
+ * processing → queued     (stuck scene recovery / retry)
+ * failed     → queued     (retry after fix)
+ * failed     → ready      (manual override, rare)
+ * ready      → processing  (re-processing with new parameters)
+ *
+ * Terminal states: ready, failed
+ */
+export const VALID_SCENE_TRANSITIONS = {
+  queued: ["processing", "failed"],
+  processing: ["ready", "failed", "queued"],
+  ready: ["processing"], // can re-process
+  failed: ["queued", "ready"], // can retry or manual override
+} as const satisfies Record<SceneStatus, readonly SceneStatus[]>;
 
 // ============================================
 // Billing & Subscription types

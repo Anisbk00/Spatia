@@ -21,6 +21,12 @@ import { logger } from "@/lib/logger";
 // Configuration
 // ============================================
 
+/**
+ * Centralized maximum retry count for all job processing.
+ * NOTE: distributed/job-dispatcher.ts previously used 3 — should be aligned to this value.
+ */
+export const MAX_RETRIES = 5;
+
 export interface JobRetryConfig {
   maxRetries: number;
   baseDelayMs: number;
@@ -33,7 +39,7 @@ export interface StuckJobConfig {
 }
 
 const DEFAULT_RETRY_CONFIG: JobRetryConfig = {
-  maxRetries: 5,
+  maxRetries: MAX_RETRIES,
   baseDelayMs: 1000,
   maxDelayMs: 300_000, // 5 minutes
 };
@@ -53,7 +59,7 @@ const DEFAULT_STUCK_CONFIG: StuckJobConfig = {
  * Uses exponential backoff with jitter to avoid thundering herd:
  *   delay = baseDelay * 2^retryCount + jitter
  *
- * Jobs exceeding maxRetries are permanently marked as failed.
+ * Jobs exceeding MAX_RETRIES are permanently marked as failed.
  */
 export class JobRetryManager {
   private config: JobRetryConfig;
@@ -219,7 +225,7 @@ export class StuckJobDetector {
           status: "failed" as JobStatus,
           retry_count: newRetryCount,
           finished_at: new Date().toISOString(),
-          logs: `Job timed out after ${this.config.timeoutMinutes} minutes. Exceeded max retries.`,
+          logs: `Job timed out after ${this.config.timeoutMinutes} minutes. Exceeded max retries (${MAX_RETRIES}).`,
         })
         .eq("id", jobId);
 
@@ -333,6 +339,11 @@ export class IdempotencyGuard {
    * This uses the database as a distributed lock: the UPDATE with
    * WHERE status = 'queued' ensures only one worker can claim the job.
    *
+   * IMPORTANT: After the update, we verify that the row was actually
+   * changed (i.e., the UPDATE matched 1 row). If another worker claimed
+   * the job between our SELECT and UPDATE, the WHERE clause won't match
+   * and we return false.
+   *
    * @param jobId - The ID of the job to lock
    * @returns True if the lock was acquired (job was claimed)
    */
@@ -340,7 +351,8 @@ export class IdempotencyGuard {
     const supabase = await createClient();
     if (!supabase) return false;
 
-    const { error } = await supabase
+    // Attempt the atomic status transition
+    const { count, error } = await supabase
       .from("processing_jobs")
       .update({
         status: "running" as JobStatus,
@@ -348,20 +360,27 @@ export class IdempotencyGuard {
       })
       .eq("id", jobId)
       .eq("status", "queued"); // Only claim if still queued
+      // Note: Supabase JS .update() doesn't return affected rows directly.
+      // We verify with a follow-up select below.
 
     if (error) {
       console.error(`[IdempotencyGuard] Failed to acquire lock for job ${jobId}:`, error);
       return false;
     }
 
-    // Verify the update actually happened (row matched)
+    // Verify the update actually happened (row matched and transitioned to "running")
     const { data: updatedJob } = await supabase
       .from("processing_jobs")
       .select("status")
       .eq("id", jobId)
       .single();
 
-    return updatedJob?.status === "running";
+    if (!updatedJob || updatedJob.status !== "running") {
+      // Row was not updated — another worker claimed it first
+      return false;
+    }
+
+    return true;
   }
 
   /**
@@ -455,6 +474,16 @@ export class JobOrchestrator {
    * Performs deduplication check — if a job of the same type already
    * exists for the scene in a non-terminal state, returns the existing job.
    *
+   * NOTE: The select-then-insert pattern has a TOCTOU race condition.
+   * In production, a UNIQUE partial index should be added to the database:
+   *
+   *   CREATE UNIQUE INDEX processing_jobs_dedup_idx
+   *     ON processing_jobs (scene_id, job_type)
+   *     WHERE status IN ('queued', 'running');
+   *
+   * The insert below is wrapped in a try-catch to handle the unique
+   * constraint violation by fetching the existing job on conflict.
+   *
    * @param sceneId - The scene this job is for
    * @param jobType - The type of processing job
    * @param metadata - Optional metadata to store in logs
@@ -499,15 +528,53 @@ export class JobOrchestrator {
       insertData.logs = JSON.stringify(metadata);
     }
 
-    const { data: newJob, error } = await supabase
-      .from("processing_jobs")
-      .insert(insertData)
-      .select("id")
-      .single();
+    // Handle TOCTOU race: if two workers both pass the dedup check and try
+    // to insert, the unique partial index (if present) will cause one to fail
+    // with a constraint violation. We catch that and return the existing job.
+    let newJob: { id: string } | null = null;
+    let insertError: unknown = null;
 
-    if (error || !newJob) {
-      console.error("[JobOrchestrator] Failed to submit job:", error);
-      throw new Error(`Failed to submit job: ${error?.message || "Unknown error"}`);
+    try {
+      const { data, error } = await supabase
+        .from("processing_jobs")
+        .insert(insertData)
+        .select("id")
+        .single();
+
+      if (error) throw error;
+      newJob = data;
+    } catch (err) {
+      insertError = err;
+
+      // Check if this is a unique constraint violation (duplicate key)
+      const isDuplicate =
+        err instanceof Error &&
+        (err.message.includes("duplicate key") ||
+         err.message.includes("unique constraint") ||
+         err.message.includes("UNIQUE") ||
+         (err as Record<string, unknown>)?.code === "23505");
+
+      if (isDuplicate) {
+        // Race condition — another worker inserted the same job.
+        // Fetch the existing job and return it.
+        const { data: raceJob } = await supabase
+          .from("processing_jobs")
+          .select("id")
+          .eq("scene_id", sceneId)
+          .eq("job_type", jobType)
+          .in("status", ["queued", "running"])
+          .limit(1)
+          .single();
+
+        if (raceJob) {
+          return { jobId: raceJob.id, isNew: false };
+        }
+      }
+    }
+
+    if (insertError || !newJob) {
+      console.error("[JobOrchestrator] Failed to submit job:", insertError);
+      throw new Error(`Failed to submit job: ${insertError instanceof Error ? insertError.message : "Unknown error"}`);
     }
 
     logger.info("JobQueue", `Submitted job ${newJob.id} (${jobType}) for scene ${sceneId}`);
@@ -519,6 +586,9 @@ export class JobOrchestrator {
    *
    * Uses the idempotency guard to safely acquire a lock,
    * then returns the job for processing by the caller.
+   *
+   * The idempotency guard verifies the UPDATE actually matched a row.
+   * If another worker claimed it first, returns null.
    *
    * @returns The claimed job, or null if no jobs are available
    */
@@ -539,10 +609,10 @@ export class JobOrchestrator {
       return null;
     }
 
-    // Try to acquire the job lock atomically
+    // Try to acquire the job lock atomically (verifies row was actually updated)
     const locked = await this.idempotencyGuard.acquireJobLock(job.id);
     if (!locked) {
-      // Another worker claimed it first
+      // Another worker claimed it first, or the row didn't match
       return null;
     }
 
@@ -579,7 +649,7 @@ export class JobOrchestrator {
   /**
    * Handle a job failure.
    *
-   * If the error is retryable and the job hasn't exceeded max retries,
+   * If the error is retryable and the job hasn't exceeded MAX_RETRIES,
    * schedules a retry with exponential backoff. Otherwise, marks the
    * job as permanently failed.
    *

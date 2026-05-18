@@ -7,6 +7,84 @@
 
 import type { PipelineContext, PipelineStageResult } from "./stages";
 
+function isSupabaseHost(url: string, supabaseUrl: string): boolean {
+  try {
+    const parsedUrl = new URL(url);
+    const parsedSupabase = new URL(supabaseUrl);
+    return parsedUrl.hostname === parsedSupabase.hostname;
+  } catch {
+    return false;
+  }
+}
+
+const CONCURRENCY = 5;
+
+async function validateSingleImage(
+  url: string,
+  index: number,
+  ctx: PipelineContext,
+  validatedUrls: string[],
+  rejectedReasons: string[]
+): Promise<void> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const headers: Record<string, string> = {};
+    // Only attach Authorization header for recognized Supabase storage URLs
+    if (isSupabaseHost(url, ctx.supabaseUrl)) {
+      headers["Authorization"] = `Bearer ${ctx.supabaseKey}`;
+    }
+
+    const response = await fetch(url, {
+      method: "HEAD",
+      signal: controller.signal,
+      headers,
+    });
+    clearTimeout(timeout);
+
+    const contentType = response.headers.get("content-type") || "";
+    const contentLengthStr = response.headers.get("content-length") || "";
+    const contentLength = parseInt(contentLengthStr, 10);
+
+    if (!response.ok) {
+      rejectedReasons.push(`Image ${index + 1}: HTTP ${response.status}`);
+      return;
+    }
+
+    if (
+      !contentType.startsWith("image/") &&
+      !contentType.startsWith("application/octet-stream")
+    ) {
+      rejectedReasons.push(
+        `Image ${index + 1}: Invalid content type "${contentType}"`
+      );
+      return;
+    }
+
+    // Treat content-length of 0 or missing as invalid
+    if (!contentLengthStr || contentLength <= 0) {
+      rejectedReasons.push(
+        `Image ${index + 1}: Missing or empty content-length`
+      );
+      return;
+    }
+
+    if (contentLength < 10240) {
+      rejectedReasons.push(
+        `Image ${index + 1}: Too small (${contentLength} bytes)`
+      );
+      return;
+    }
+
+    validatedUrls.push(url);
+  } catch (err) {
+    rejectedReasons.push(
+      `Image ${index + 1}: ${err instanceof Error ? err.message : "Fetch failed"}`
+    );
+  }
+}
+
 export async function runImageValidation(
   ctx: PipelineContext
 ): Promise<PipelineStageResult> {
@@ -14,7 +92,9 @@ export async function runImageValidation(
   const logs: string[] = [];
 
   logs.push(`[${new Date().toISOString()}] Starting image validation`);
-  logs.push(`[${new Date().toISOString()}] Total images: ${ctx.imageUrls.length}`);
+  logs.push(
+    `[${new Date().toISOString()}] Total images: ${ctx.imageUrls.length}`
+  );
 
   if (ctx.imageUrls.length < 3) {
     return {
@@ -30,46 +110,30 @@ export async function runImageValidation(
   const validatedUrls: string[] = [];
   const rejectedReasons: string[] = [];
 
-  await Promise.all(
-    ctx.imageUrls.map(async (url, i) => {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
-        const response = await fetch(url, {
-          method: "HEAD",
-          signal: controller.signal,
-          headers: { Authorization: `Bearer ${ctx.supabaseKey}` },
-        });
-        clearTimeout(timeout);
+  // Process images with concurrency limit of 5
+  let nextIndex = 0;
 
-        const contentType = response.headers.get("content-type") || "";
-        const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
+  async function worker(): Promise<void> {
+    while (nextIndex < ctx.imageUrls.length) {
+      const i = nextIndex++;
+      await validateSingleImage(
+        ctx.imageUrls[i],
+        i,
+        ctx,
+        validatedUrls,
+        rejectedReasons
+      );
+    }
+  }
 
-        if (!response.ok) {
-          rejectedReasons.push(`Image ${i + 1}: HTTP ${response.status}`);
-          return;
-        }
-
-        if (!contentType.startsWith("image/") && !contentType.startsWith("application/octet-stream")) {
-          rejectedReasons.push(`Image ${i + 1}: Invalid content type "${contentType}"`);
-          return;
-        }
-
-        if (contentLength > 0 && contentLength < 10240) {
-          rejectedReasons.push(`Image ${i + 1}: Too small (${contentLength} bytes)`);
-          return;
-        }
-
-        validatedUrls.push(url);
-      } catch (err) {
-        rejectedReasons.push(`Image ${i + 1}: ${err instanceof Error ? err.message : "Fetch failed"}`);
-      }
-    })
-  );
+  const workerCount = Math.min(CONCURRENCY, ctx.imageUrls.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   logs.push(
     `[${new Date().toISOString()}] Valid images: ${validatedUrls.length}/${ctx.imageUrls.length}` +
-    (rejectedReasons.length > 0 ? `\n  Rejected: ${rejectedReasons.join("; ")}` : "")
+      (rejectedReasons.length > 0
+        ? `\n  Rejected: ${rejectedReasons.join("; ")}`
+        : "")
   );
 
   if (validatedUrls.length < 3) {

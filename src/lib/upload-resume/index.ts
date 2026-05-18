@@ -185,13 +185,16 @@ export async function uploadWithResume(params: {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown upload error";
 
-    // Update upload_operation → failed
+    // Update upload_operation → failed.
+    // IMPORTANT: Do NOT reset retry_count to 0 here. The retry count is
+    // managed by the caller (ResumableUploadQueue). Resetting it would
+    // cause an infinite retry loop since the queue checks retry_count
+    // against MAX_RETRIES to decide whether to retry.
     await supabase
       .from("upload_operations")
       .update({
         status: "failed",
         last_error: errorMessage,
-        retry_count: 0, // Will be incremented by queue
         updated_at: new Date().toISOString(),
       })
       .eq("id", operationId);

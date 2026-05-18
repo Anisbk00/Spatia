@@ -14,10 +14,10 @@ Gaussian Splat format (.splat binary) for real-time 3D viewing.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
-import struct
 import tempfile
 from typing import Any, Optional
 
@@ -76,6 +76,9 @@ def convert_to_splat(
         f"max_gaussians={max_gaussians}"
     )
 
+    # Deterministic seed from predictions_path for reproducible subsampling
+    predictions_seed = abs(hash(predictions_path)) % (2**32)
+
     # Load predictions
     predictions = _load_predictions(predictions_path)
     if predictions is None:
@@ -113,8 +116,8 @@ def convert_to_splat(
     # Extract colors from frames or generate pseudo-colors
     colors = _extract_colors(predictions, frames_dir, mask)
 
-    # Estimate scales from point density
-    scales = _estimate_scales(positions)
+    # Estimate scales from point density (deterministic)
+    scales = _estimate_scales(positions, seed=predictions_seed)
 
     # Estimate rotations (aligned to surface normals)
     rotations = _estimate_rotations(predictions, mask)
@@ -122,10 +125,10 @@ def convert_to_splat(
     # Estimate opacity from confidence
     opacities = _estimate_opacities(confidences)
 
-    # Subsample if exceeding max_gaussians
+    # Subsample if exceeding max_gaussians (deterministic)
     if len(positions) > max_gaussians:
         logger.info(f"Subsampling from {len(positions)} to {max_gaussians} gaussians")
-        indices = _smart_subsample(positions, max_gaussians)
+        indices = _smart_subsample(positions, max_gaussians, seed=predictions_seed)
         positions = positions[indices]
         scales = scales[indices]
         rotations = rotations[indices]
@@ -252,9 +255,14 @@ def generate_scene_metadata(
         world_points = predictions["world_points"]
         # Compute actual bounds from the point cloud
         flat_points = world_points.reshape(-1, 3)
+
+        # Use deterministic seeded RNG for reproducibility
+        scene_id_hash = abs(hash(scene_id)) % (2**32)
+        rng = np.random.RandomState(scene_id_hash)
+
         # Sample to avoid memory issues
         if len(flat_points) > 100000:
-            sample_idx = np.random.choice(len(flat_points), 100000, replace=False)
+            sample_idx = rng.choice(len(flat_points), 100000, replace=False)
             flat_points = flat_points[sample_idx]
 
         bounds = {
@@ -274,7 +282,7 @@ def generate_scene_metadata(
         "bounds": bounds,
         "coordinateSystem": "right-handed-y-up",
         "processingTimeSeconds": processing_time_seconds,
-        "generatedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "pipelineVersion": "lingbot-v1.0",
     }
 
@@ -299,8 +307,12 @@ def generate_thumbnail(
 
     # Try to use a source frame as thumbnail
     if frames_dir and os.path.isdir(frames_dir):
-        import glob
-        frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
+        # Use os.listdir() with case-insensitive matching instead of glob
+        frames = sorted([
+            os.path.join(frames_dir, f)
+            for f in os.listdir(frames_dir)
+            if f.lower().startswith("frame_") and f.lower().endswith(".jpg")
+        ])
         if frames:
             # Use a frame from the middle of the sequence
             mid_idx = len(frames) // 2
@@ -407,10 +419,14 @@ def _extract_colors_from_frames(
     """Extract per-pixel colors from the original video frames.
 
     Maps each world point back to its source frame pixel and reads the color.
+    Uses os.listdir() with case-insensitive matching instead of glob.
     """
-    import glob
-
-    frame_paths = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
+    # Use os.listdir() instead of glob.glob() for case-insensitive matching
+    frame_paths = sorted([
+        os.path.join(frames_dir, f)
+        for f in os.listdir(frames_dir)
+        if f.lower().startswith("frame_") and f.lower().endswith(".jpg")
+    ])
     if not frame_paths:
         return None
 
@@ -502,22 +518,30 @@ def _pseudo_color_from_depth(
     return colors
 
 
-def _estimate_scales(positions: np.ndarray) -> np.ndarray:
+def _estimate_scales(
+    positions: np.ndarray,
+    seed: int = 42,
+) -> np.ndarray:
     """Estimate Gaussian scales from local point density.
 
     Uses K-nearest neighbor distances to estimate the spacing
     between points, which determines the Gaussian scale.
+
+    Args:
+        positions: [N, 3] point positions.
+        seed: Random seed for deterministic subsampling.
 
     Returns:
         scales: [N, 3] float32 — log scale values
     """
     from scipy.spatial import cKDTree
 
+    rng = np.random.RandomState(seed)
     n_points = len(positions)
 
     # Subsample for KNN if too many points
     if n_points > 50000:
-        sample_idx = np.random.choice(n_points, 50000, replace=False)
+        sample_idx = rng.choice(n_points, 50000, replace=False)
         sample_positions = positions[sample_idx]
     else:
         sample_positions = positions
@@ -562,8 +586,11 @@ def _estimate_rotations(
 ) -> np.ndarray:
     """Estimate Gaussian rotations from surface normals.
 
-    For now, uses identity rotation (aligned with axes).
-    Surface normal estimation can be added later for better quality.
+    Currently uses identity rotation (aligned with axes) as a placeholder.
+    TODO: Improve quality by computing surface normals from the point cloud
+    and aligning each Gaussian's z-axis to the estimated normal direction.
+    This requires estimating local tangent planes via PCA or similar methods
+    on the point cloud neighborhood.
 
     Returns:
         rotations: [N, 4] uint8 — normalized quaternion as bytes
@@ -595,14 +622,26 @@ def _estimate_opacities(confidences: np.ndarray) -> np.ndarray:
     return opacity_float.astype(np.uint8)
 
 
-def _smart_subsample(positions: np.ndarray, max_gaussians: int) -> np.ndarray:
+def _smart_subsample(
+    positions: np.ndarray,
+    max_gaussians: int,
+    seed: int = 42,
+) -> np.ndarray:
     """Subsample points using voxel grid + random sampling.
 
+    Uses a seeded RNG for deterministic, reproducible results.
+
     This preserves spatial coverage better than pure random sampling.
+
+    Args:
+        positions: [N, 3] point positions.
+        max_gaussians: Maximum number of points to select.
+        seed: Random seed for deterministic sampling.
 
     Returns:
         indices: [max_gaussians] int array of selected point indices
     """
+    rng = np.random.RandomState(seed)
     n_points = len(positions)
 
     if n_points <= max_gaussians:
@@ -630,12 +669,12 @@ def _smart_subsample(positions: np.ndarray, max_gaussians: int) -> np.ndarray:
         if remaining > 0:
             pool = np.setdiff1d(np.arange(n_points), unique_indices)
             if len(pool) > 0:
-                extra = np.random.choice(pool, min(remaining, len(pool)), replace=False)
+                extra = rng.choice(pool, min(remaining, len(pool)), replace=False)
                 return np.concatenate([unique_indices, extra])
         return unique_indices
 
     # Step 2: Too many voxels — randomly sample from voxel representatives
-    return np.random.choice(unique_indices, max_gaussians, replace=False)
+    return rng.choice(unique_indices, max_gaussians, replace=False)
 
 
 def _write_splat_file(
@@ -646,7 +685,7 @@ def _write_splat_file(
     colors: np.ndarray,  # [N, 3] uint8
     opacities: np.ndarray,  # [N] uint8
 ) -> None:
-    """Write the .splat binary file.
+    """Write the .splat binary file using numpy for performance.
 
     Format per Gaussian (32 bytes):
         position:   3×float32 (12 bytes)
@@ -665,44 +704,31 @@ def _write_splat_file(
     assert opacities.shape == (n_gaussians,), f"opacities shape: {opacities.shape}"
 
     # Ensure correct dtypes
-    positions = positions.astype(np.float32)
-    scales = scales.astype(np.float32)
-    rotations = rotations.astype(np.uint8)
-    colors = colors.astype(np.uint8)
-    opacities = opacities.astype(np.uint8)
+    positions = np.ascontiguousarray(positions, dtype=np.float32)
+    scales = np.ascontiguousarray(scales, dtype=np.float32)
+    rotations = np.ascontiguousarray(rotations, dtype=np.uint8)
+    colors = np.ascontiguousarray(colors, dtype=np.uint8)
+    opacities = np.ascontiguousarray(opacities, dtype=np.uint8)
 
-    # Build binary buffer
-    # Each gaussian: pos(12) + scale(12) + rot(4) + color(3) + opacity(1) = 32 bytes
-    buffer = bytearray(n_gaussians * BYTES_PER_GAUSSIAN)
+    # ── Build binary buffer using numpy (fast, no Python loop) ──
+    # Pre-allocate output buffer: N gaussians × 32 bytes each
+    output = np.empty((n_gaussians, BYTES_PER_GAUSSIAN), dtype=np.uint8)
 
-    for i in range(n_gaussians):
-        offset = i * BYTES_PER_GAUSSIAN
+    # Write float data into first 24 bytes of each row (6 × float32)
+    # positions: [N, 3] float32 + scales: [N, 3] float32 → [N, 6] float32
+    float_data = np.column_stack([positions, scales])  # [N, 6] float32
+    output[:, :24].view(np.float32)[:, :6] = float_data
 
-        # Position: 3×float32
-        struct.pack_into("fff", buffer, offset,
-                         positions[i, 0], positions[i, 1], positions[i, 2])
-
-        # Scale: 3×float32
-        struct.pack_into("fff", buffer, offset + 12,
-                         scales[i, 0], scales[i, 1], scales[i, 2])
-
-        # Rotation: 4×uint8
-        buffer[offset + 24] = rotations[i, 0]
-        buffer[offset + 25] = rotations[i, 1]
-        buffer[offset + 26] = rotations[i, 2]
-        buffer[offset + 27] = rotations[i, 3]
-
-        # Color: 3×uint8
-        buffer[offset + 28] = colors[i, 0]
-        buffer[offset + 29] = colors[i, 1]
-        buffer[offset + 30] = colors[i, 2]
-
-        # Opacity: 1×uint8
-        buffer[offset + 31] = opacities[i]
+    # Write byte data into last 8 bytes of each row
+    # rotations: [N, 4] uint8 + colors: [N, 3] uint8 + opacities: [N] uint8
+    byte_data = np.column_stack([
+        rotations, colors, opacities.reshape(-1, 1),
+    ])  # [N, 8] uint8
+    output[:, 24:32] = byte_data
 
     # Write to file
     with open(output_path, "wb") as f:
-        f.write(bytes(buffer))
+        f.write(output.tobytes())
 
     # Verify file size
     actual_size = os.path.getsize(output_path)
@@ -744,9 +770,10 @@ def _generate_point_cloud_thumbnail(
     if len(points) == 0:
         return None
 
-    # Sample for performance
+    # Sample for performance (deterministic)
+    rng = np.random.RandomState(abs(hash(predictions_path)) % (2**32))
     if len(points) > 100000:
-        idx = np.random.choice(len(points), 100000, replace=False)
+        idx = rng.choice(len(points), 100000, replace=False)
         points = points[idx]
 
     # Top-down view (XZ plane)

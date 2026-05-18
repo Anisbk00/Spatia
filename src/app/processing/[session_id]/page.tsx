@@ -1,5 +1,6 @@
 import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import {
   Card,
   CardContent,
@@ -87,13 +88,13 @@ export default async function ProcessingPage({
       {/* Content */}
       <main className="flex-1 px-4 py-8 sm:px-6">
         <div className="mx-auto max-w-lg">
-          <a
+          <Link
             href="/dashboard"
             className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             <ArrowLeft className="h-4 w-4" />
             Back to Dashboard
-          </a>
+          </Link>
 
           <Card className="border-0 shadow-xl">
             <CardHeader className="text-center pb-2">
@@ -111,11 +112,11 @@ export default async function ProcessingPage({
           </Card>
 
           <div className="mt-4 text-center">
-            <a href="/dashboard">
+            <Link href="/dashboard">
               <Button variant="outline" className="h-12 text-base">
                 Return to Dashboard
               </Button>
-            </a>
+            </Link>
           </div>
         </div>
       </main>

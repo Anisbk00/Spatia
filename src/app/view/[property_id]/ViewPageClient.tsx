@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
-import { ArrowLeft, Home, Rotate3d, AlertTriangle } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import Link from "next/link";
+import { ArrowLeft, Home, Rotate3d, AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
 } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ViewerCanvas } from "@/components/viewer/ViewerCanvas";
 import { ViewerControls } from "@/components/viewer/ViewerControls";
 import { LoadingScene } from "@/components/viewer/LoadingScene";
@@ -23,6 +25,9 @@ interface ViewPageClientProps {
   sharePath: string;
 }
 
+const BASE_INTERVAL_MS = 10000;
+const MAX_INTERVAL_MS = 60000;
+
 export function ViewPageClient({
   propertyId,
   propertyTitle,
@@ -35,6 +40,7 @@ export function ViewPageClient({
 }: ViewPageClientProps) {
   const [modelUrl, setModelUrl] = useState(initialModelUrl);
   const [sceneStatus, setSceneStatus] = useState(initialSceneStatus);
+  const [pollError, setPollError] = useState<string | null>(null);
   const [viewerState, setViewerState] = useState<ViewerState>({
     isLoading: true,
     isReady: false,
@@ -53,11 +59,19 @@ export function ViewPageClient({
   useEffect(() => {
     if (sceneStatus !== "processing" && sceneStatus !== "queued") return;
 
-    const pollInterval = setInterval(async () => {
+    let disposed = false;
+    let currentInterval = BASE_INTERVAL_MS;
+
+    const fetchStatus = async () => {
+      if (disposed) return;
       try {
         const res = await fetch(`/api/properties/${propertyId}/scene-status`);
         if (!res.ok) return;
         const data = await res.json();
+
+        // Reset error and backoff on successful poll
+        setPollError(null);
+        currentInterval = BASE_INTERVAL_MS;
 
         if (data.scene?.status && data.scene.status !== sceneStatus) {
           setSceneStatus(data.scene.status as SceneStatus);
@@ -67,10 +81,23 @@ export function ViewPageClient({
         }
       } catch (err) {
         console.error("[ViewPageClient] Scene status poll failed:", err);
-      }
-    }, 10000); // Poll every 10s
+        if (disposed) return;
+        setPollError("Connection issue while checking scene status — retrying...");
 
-    return () => clearInterval(pollInterval);
+        // Exponential backoff
+        currentInterval = Math.min(currentInterval * 2, MAX_INTERVAL_MS);
+        clearInterval(pollTimer);
+        pollTimer = setInterval(fetchStatus, currentInterval);
+      }
+    };
+
+    fetchStatus();
+    let pollTimer = setInterval(fetchStatus, currentInterval);
+
+    return () => {
+      disposed = true;
+      clearInterval(pollTimer);
+    };
   }, [sceneStatus, propertyId]);
 
   const formatPrice = (price: number | null, currency: string) => {
@@ -89,9 +116,9 @@ export function ViewPageClient({
         <header className="sticky top-0 z-50 border-b border-white/10 bg-black/80 backdrop-blur-md">
           <div className="mx-auto flex h-12 max-w-7xl items-center justify-between px-4">
             <div className="flex items-center gap-3">
-              <a href={`/property/${propertyId}`} className="text-white/60 hover:text-white transition-colors">
+              <Link href={`/property/${propertyId}`} className="text-white/60 hover:text-white transition-colors">
                 <ArrowLeft className="h-5 w-5" />
-              </a>
+              </Link>
               <div className="flex items-center gap-2">
                 <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-600">
                   <Home className="h-3.5 w-3.5 text-white" />
@@ -112,11 +139,22 @@ export function ViewPageClient({
                   <p className="mt-2 max-w-sm text-sm text-white/60">
                     The Gaussian Splat reconstruction is in progress. This typically takes 10–30 minutes depending on the number of images.
                   </p>
+
+                  {/* Polling error */}
+                  {pollError && (
+                    <Alert variant="destructive" className="mt-4 border-white/10 bg-white/5">
+                      <RefreshCw className="h-4 w-4 text-amber-400" />
+                      <AlertDescription className="text-amber-200">
+                        {pollError}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
                   <p className="mt-3 text-xs text-white/30">
                     This page will automatically load the 3D viewer when ready.
                   </p>
                   <Button variant="outline" className="mt-6 border-white/20 text-white hover:bg-white/10" asChild>
-                    <a href={`/property/${propertyId}`}>View Property Details</a>
+                    <Link href={`/property/${propertyId}`}>View Property Details</Link>
                   </Button>
                 </>
               ) : sceneStatus === "failed" ? (
@@ -127,7 +165,7 @@ export function ViewPageClient({
                     The 3D scene could not be generated. The property owner has been notified.
                   </p>
                   <Button variant="outline" className="mt-6 border-white/20 text-white hover:bg-white/10" asChild>
-                    <a href={`/property/${propertyId}`}>View Property Details</a>
+                    <Link href={`/property/${propertyId}`}>View Property Details</Link>
                   </Button>
                 </>
               ) : (
@@ -138,7 +176,7 @@ export function ViewPageClient({
                     This property does not have a 3D walkthrough yet.
                   </p>
                   <Button variant="outline" className="mt-6 border-white/20 text-white hover:bg-white/10" asChild>
-                    <a href={`/property/${propertyId}`}>View Property Details</a>
+                    <Link href={`/property/${propertyId}`}>View Property Details</Link>
                   </Button>
                 </>
               )}
@@ -217,10 +255,10 @@ export function ViewPageClient({
           asChild
           className="rounded-xl bg-black/40 text-white hover:bg-black/60 hover:text-white backdrop-blur-md h-9 gap-1.5 px-3"
         >
-          <a href={`/property/${propertyId}`}>
+          <Link href={`/property/${propertyId}`}>
             <ArrowLeft className="h-4 w-4" />
             <span className="text-xs">Details</span>
-          </a>
+          </Link>
         </Button>
       </div>
     </div>

@@ -3,7 +3,16 @@
 // ============================================
 // Provides reusable retry logic with exponential
 // backoff + jitter for any async operation.
+//
+// NOTE: Default MAX_RETRIES is aligned with job-queue/index.ts (5).
+// When using withRetry for general operations, callers can override
+// the default per their needs.
 // ============================================
+
+/**
+ * Centralized max retry count — aligned with job-queue/index.ts.
+ */
+export const MAX_RETRIES = 5;
 
 /**
  * Calculate exponential backoff delay with jitter.
@@ -160,7 +169,8 @@ export function isRetryableError(error: unknown): boolean {
  * Only retries on errors that pass the `isRetryableError` check.
  *
  * @param fn - The async function to execute
- * @param maxRetries - Maximum number of retry attempts (default 3)
+ * @param maxRetries - Maximum number of retry attempts (default: MAX_RETRIES = 5,
+ *                     aligned with job-queue/index.ts centralized config)
  * @param backoffFn - Custom backoff function (retryCount) => delayMs. Defaults to calculateBackoff.
  * @returns The result of the function on success
  * @throws The last error if all retries are exhausted or error is non-retryable
@@ -176,7 +186,7 @@ export function isRetryableError(error: unknown): boolean {
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
-  maxRetries: number = 3,
+  maxRetries: number = MAX_RETRIES,
   backoffFn: (retryCount: number) => number = (n) => calculateBackoff(n),
 ): Promise<T> {
   let lastError: unknown;

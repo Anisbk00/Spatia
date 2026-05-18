@@ -1,10 +1,7 @@
 // ============================================
 // Rate Limiter — Sliding Window Algorithm
-// with File-Based Persistence
+// with In-Memory Storage + Periodic Cleanup
 // ============================================
-
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
 
 export interface RateLimitEntry {
   count: number;
@@ -17,52 +14,34 @@ export interface RateLimitResult {
   resetAt: Date;
 }
 
-const PERSIST_PATH = "/tmp/spatia-rate-limits.json";
-const PERSIST_INTERVAL_MS = 30_000; // Persist every 30 seconds
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // Cleanup every 5 minutes
 const MAX_STORE_SIZE = 10_000; // Prevent unbounded growth
 
 /**
- * RateLimiter class with sliding window algorithm and file-based persistence.
- * Stores: Map<string, { count, resetAt }>
- * Persists to disk so rate limits survive server restarts.
+ * RateLimiter class with sliding window algorithm.
+ *
+ * Uses an in-memory Map with TTL-based entries and periodic cleanup.
+ *
+ * NOTE: This implementation is per-process. For multi-instance / multi-server
+ * deployments, replace this with a Redis-backed rate limiter (e.g., ioredis
+ * with sliding window logs or token bucket). The interface is intentionally
+ * simple to allow swapping the backing store without changing callers.
  */
 export class RateLimiter {
   private store = new Map<string, RateLimitEntry>();
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
-  private persistInterval: ReturnType<typeof setInterval> | null = null;
-  private dirty = false;
 
   constructor() {
-    // Load persisted state on startup
-    this.loadFromDisk();
-
-    // Run cleanup every 5 minutes
+    // Run cleanup every 5 minutes to evict expired entries
     if (typeof globalThis !== "undefined") {
       this.cleanupInterval = setInterval(() => {
         this.cleanup();
-      }, 5 * 60 * 1000);
+      }, CLEANUP_INTERVAL_MS);
 
       // Don't prevent process exit
       if (this.cleanupInterval && typeof this.cleanupInterval.unref === "function") {
         this.cleanupInterval.unref();
       }
-    }
-
-    // Persist to disk periodically
-    this.persistInterval = setInterval(() => {
-      if (this.dirty) {
-        this.persistToDisk();
-      }
-    }, PERSIST_INTERVAL_MS);
-
-    if (this.persistInterval && typeof this.persistInterval.unref === "function") {
-      this.persistInterval.unref();
-    }
-
-    // Persist on graceful shutdown
-    if (typeof process !== "undefined" && process.on) {
-      process.on("SIGINT", () => { this.persistToDisk(); });
-      process.on("SIGTERM", () => { this.persistToDisk(); });
     }
   }
 
@@ -82,7 +61,6 @@ export class RateLimiter {
     if (!entry || now >= entry.resetAt) {
       const resetAt = now + windowMs;
       this.store.set(key, { count: 1, resetAt });
-      this.dirty = true;
 
       return {
         allowed: true,
@@ -94,7 +72,6 @@ export class RateLimiter {
     // Entry exists and window is still valid
     if (entry.count < limit) {
       entry.count++;
-      this.dirty = true;
       return {
         allowed: true,
         remaining: limit - entry.count,
@@ -115,12 +92,11 @@ export class RateLimiter {
    */
   reset(key: string): void {
     this.store.delete(key);
-    this.dirty = true;
   }
 
   /**
    * Remove expired entries from the store.
-   * Should be called periodically to prevent memory leaks.
+   * Called periodically to prevent memory leaks.
    */
   cleanup(): void {
     const now = Date.now();
@@ -129,7 +105,18 @@ export class RateLimiter {
         this.store.delete(key);
       }
     }
-    this.dirty = true;
+
+    // Enforce max store size — if still too large after cleanup,
+    // evict oldest entries first
+    if (this.store.size > MAX_STORE_SIZE) {
+      const entries = Array.from(this.store.entries())
+        .sort(([, a], [, b]) => a.resetAt - b.resetAt);
+
+      const toRemove = this.store.size - MAX_STORE_SIZE;
+      for (let i = 0; i < toRemove; i++) {
+        this.store.delete(entries[i][0]);
+      }
+    }
   }
 
   /**
@@ -139,46 +126,15 @@ export class RateLimiter {
     return this.store.size;
   }
 
-  // ---- Persistence ----
-
-  private loadFromDisk(): void {
-    try {
-      if (!existsSync(PERSIST_PATH)) return;
-      const data = JSON.parse(readFileSync(PERSIST_PATH, "utf-8"));
-      if (data && typeof data === "object") {
-        const now = Date.now();
-        for (const [key, entry] of Object.entries(data)) {
-          const e = entry as RateLimitEntry;
-          // Skip expired entries on load
-          if (e.resetAt && now < e.resetAt) {
-            this.store.set(key, e);
-          }
-        }
-      }
-    } catch {
-      // Silently ignore — start fresh
+  /**
+   * Stop the cleanup interval. Call this during graceful shutdown.
+   */
+  destroy(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
     }
-  }
-
-  private persistToDisk(): void {
-    try {
-      // Enforce max store size
-      if (this.store.size > MAX_STORE_SIZE) {
-        this.cleanup();
-      }
-      const obj: Record<string, RateLimitEntry> = {};
-      for (const [key, entry] of this.store.entries()) {
-        obj[key] = entry;
-      }
-      const dir = dirname(PERSIST_PATH);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      writeFileSync(PERSIST_PATH, JSON.stringify(obj), "utf-8");
-      this.dirty = false;
-    } catch {
-      // Silently ignore — in-memory still works
-    }
+    this.store.clear();
   }
 }
 

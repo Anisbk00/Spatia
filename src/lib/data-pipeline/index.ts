@@ -13,6 +13,25 @@ import type { PipelineCacheEntry } from "@/lib/types";
 import { logger } from "@/lib/logger";
 
 // ============================================
+// Configurable thresholds
+// ============================================
+
+/** Minimum reuse score to consider a scene as a viable reuse candidate */
+export const MIN_REUSE_SCORE = 0.3;
+
+/** Default cache TTL in hours */
+export const DEFAULT_CACHE_TTL_HOURS = 168; // 7 days
+
+/** Weight for quality score in reuse calculation */
+export const QUALITY_WEIGHT = 0.7;
+
+/** Weight for processing time in reuse calculation */
+export const TIME_WEIGHT = 0.3;
+
+/** Maximum number of reuse candidates to return */
+export const MAX_REUSE_CANDIDATES = 5;
+
+// ============================================
 // DataPipelineOptimizer
 // ============================================
 
@@ -166,12 +185,20 @@ export class DataPipelineOptimizer {
         return null;
       }
 
-      // Increment reuse_count asynchronously (fire-and-forget)
-      supabase
-        .from("pipeline_cache")
-        .update({ reuse_count: (data.reuse_count ?? 0) + 1 })
-        .eq("cache_key", imageHash)
-        .then(() => { /* no-op */ });
+      // Increment reuse_count with proper error handling (not fire-and-forget)
+      try {
+        await supabase
+          .from("pipeline_cache")
+          .update({ reuse_count: (data.reuse_count ?? 0) + 1 })
+          .eq("cache_key", imageHash);
+      } catch (reuseErr) {
+        // Log but don't fail — the cache hit itself is still valid
+        console.warn(
+          "[DataPipeline] Failed to increment reuse_count for cache key",
+          imageHash,
+          reuseErr,
+        );
+      }
 
       return data as PipelineCacheEntry;
     } catch (err) {
@@ -199,7 +226,7 @@ export class DataPipelineOptimizer {
       const supabase = await createClient();
       if (!supabase) return;
 
-      const ttl = params.ttlHours ?? 168; // Default 7 days
+      const ttl = params.ttlHours ?? DEFAULT_CACHE_TTL_HOURS;
       const now = new Date();
       const expiresAt = new Date(now.getTime() + ttl * 60 * 60 * 1000);
 
@@ -289,15 +316,22 @@ export class DataPipelineOptimizer {
         // Reuse score based on:
         // - Quality score (higher = better candidate)
         // - Processing time (faster = more efficient to reuse)
-        // - Image count similarity
         const qualityFactor = (scene.quality_score as number) || 0.5;
         const timeFactor = scene.processing_time_seconds
           ? Math.max(0, 1 - (scene.processing_time_seconds as number) / 3600)
           : 0.5;
 
-        const reuseScore = qualityFactor * 0.7 + timeFactor * 0.3;
+        const reuseScore = qualityFactor * QUALITY_WEIGHT + timeFactor * TIME_WEIGHT;
 
-        if (reuseScore > 0.3) {
+        // TODO: Incorporate imageCount and region into the scoring.
+        // Currently these params are accepted but not used in the query
+        // because the scenes table doesn't store image count or region
+        // directly. To fully utilize these params, we would need to:
+        //   1. Join through capture_sessions to get media count for imageCount
+        //   2. Join through properties to get a region field (not currently in schema)
+        // For now, the scoring uses quality and processing time as proxies.
+
+        if (reuseScore > MIN_REUSE_SCORE) {
           results.push({
             sceneId: scene.id as string,
             reuseScore: Math.round(reuseScore * 100) / 100,
@@ -309,7 +343,7 @@ export class DataPipelineOptimizer {
       // Sort by reuse score (highest first)
       results.sort((a, b) => b.reuseScore - a.reuseScore);
 
-      return results.slice(0, 5); // Top 5 candidates
+      return results.slice(0, MAX_REUSE_CANDIDATES);
     } catch (err) {
       console.error(
         "[DataPipeline] Error finding reusable reconstructions:",
@@ -521,7 +555,10 @@ export class DataPipelineOptimizer {
         };
       }
 
-      // Calculate cache hit rate from Supabase pipeline_cache table
+      // Calculate cache hit rate from Supabase pipeline_cache table.
+      // Correct formula: total reuse_count / total accesses,
+      // where total accesses = sum of (reuse_count + 1) per entry
+      // (1 for the original cache write + reuse_count for subsequent hits).
       let cacheHitRate = 0;
       let reusedReconstructions = 0;
 
@@ -530,18 +567,15 @@ export class DataPipelineOptimizer {
         .select("reuse_count");
 
       if (!cacheError && cacheEntries && cacheEntries.length > 0) {
-        let totalLookups = cacheEntries.length;
-        let cacheHits = 0;
+        let totalAccesses = 0;
 
         for (const entry of cacheEntries) {
           const reuseCount = (entry.reuse_count as number) || 0;
-          if (reuseCount > 0) {
-            cacheHits++;
-            reusedReconstructions += reuseCount;
-          }
+          reusedReconstructions += reuseCount;
+          totalAccesses += reuseCount + 1; // 1 original + N reuses
         }
 
-        cacheHitRate = totalLookups > 0 ? cacheHits / totalLookups : 0;
+        cacheHitRate = totalAccesses > 0 ? reusedReconstructions / totalAccesses : 0;
       }
 
       // Calculate redundant processing from duplicate scenes

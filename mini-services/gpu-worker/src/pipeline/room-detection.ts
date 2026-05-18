@@ -6,24 +6,26 @@
 //
 // Uses actual image count and scene bounds to
 // make realistic room estimates based on volume.
+//
+// Audit fixes applied:
+//   - Math.random() replaced with seeded PRNG
+//   - SIMULATED mode support
+//   - DetectedRoom now includes both center and estimated_area_sqm
 // ============================================
 
 import type { PipelineContext, PipelineStageResult } from "./stages";
-
-interface DetectedRoom {
-  type: string;
-  confidence: number;
-  estimated_area_sqm: number;
-  bounds: { min: [number, number, number]; max: [number, number, number] };
-}
+import type { DetectedRoom } from "../types";
+import { createSeededRandom, SIMULATED } from "../types";
 
 export async function runRoomDetection(
   ctx: PipelineContext
 ): Promise<PipelineStageResult> {
   const startTime = Date.now();
   const logs: string[] = [];
+  const seededRandom = createSeededRandom(ctx.sceneId);
 
   logs.push(`[${new Date().toISOString()}] Starting room detection`);
+  logs.push(`[${new Date().toISOString()}] Mode: ${SIMULATED ? "simulated" : "real"}`);
 
   const splatCount = Number(ctx.artifacts.cleaned_splat_count || ctx.artifacts.splat_count || "50000");
   const imageCount = Number(ctx.artifacts.valid_image_count || "10");
@@ -54,29 +56,42 @@ export async function runRoomDetection(
   ];
 
   const detectedRooms: DetectedRoom[] = [];
-  const shuffledTypes = [...roomTypes].sort(() => Math.random() - 0.5);
+  // FIX: Use seeded PRNG instead of Math.random() for shuffle
+  const shuffledTypes = [...roomTypes].sort(() => seededRandom() - 0.5);
 
   for (let i = 0; i < estimatedRoomCount; i++) {
     const roomType = shuffledTypes[i % shuffledTypes.length];
-    const confidence = 0.7 + Math.random() * 0.25; // 70-95% confidence
-    const areaVariation = 0.7 + Math.random() * 0.6; // 70-130% of average
+    // FIX: Use seeded PRNG instead of Math.random()
+    const confidence = 0.7 + seededRandom() * 0.25; // 70-95% confidence
+    const areaVariation = 0.7 + seededRandom() * 0.6; // 70-130% of average
+
+    const roomMin: [number, number, number] = [
+      bounds.min[0] + (i / estimatedRoomCount) * (bounds.max[0] - bounds.min[0]),
+      bounds.min[1],
+      bounds.min[2],
+    ];
+    const roomMax: [number, number, number] = [
+      bounds.min[0] + ((i + 1) / estimatedRoomCount) * (bounds.max[0] - bounds.min[0]),
+      bounds.max[1],
+      bounds.max[2],
+    ];
+
+    // Compute center from bounds
+    const center: [number, number, number] = [
+      (roomMin[0] + roomMax[0]) / 2,
+      (roomMin[1] + roomMax[1]) / 2,
+      (roomMin[2] + roomMax[2]) / 2,
+    ];
 
     detectedRooms.push({
       type: roomType.type,
       confidence: Math.round(confidence * 100) / 100,
-      estimated_area_sqm: Math.round(roomType.avgArea * areaVariation),
       bounds: {
-        min: [
-          bounds.min[0] + (i / estimatedRoomCount) * (bounds.max[0] - bounds.min[0]),
-          bounds.min[1],
-          bounds.min[2],
-        ],
-        max: [
-          bounds.min[0] + ((i + 1) / estimatedRoomCount) * (bounds.max[0] - bounds.min[0]),
-          bounds.max[1],
-          bounds.max[2],
-        ],
+        min: roomMin,
+        max: roomMax,
       },
+      center,
+      estimated_area_sqm: Math.round(roomType.avgArea * areaVariation),
     });
   }
 

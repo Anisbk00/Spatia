@@ -69,6 +69,17 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // 3b. Verify user has agent/admin role
+  const { data: profile } = await dataClient
+    .from("users")
+    .select("role")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (!profile || (profile.role !== "agent" && profile.role !== "admin")) {
+    return NextResponse.json({ error: "Forbidden — agent/admin required" }, { status: 403 });
+  }
+
   // 4. Fetch org membership — use admin client to bypass potential RLS on organization_members
   try {
     const { data: membership, error: memberError } = await dataClient
@@ -119,20 +130,35 @@ export async function POST(request: NextRequest) {
   }
 
   // 6. Create property — use admin client to bypass RLS
-  const { data: property, error: propertyError } = await dataClient
-    .from("properties")
-    .insert({
-      org_id: orgId,
-      created_by: user.id,
-      title: body.title.trim(),
-      address: body.address?.trim() || null,
-      property_type: body.property_type || null,
-      price: body.price || null,
-      description: body.description?.trim() || null,
-      status: "draft",
-    })
-    .select()
-    .single();
+  //    Wrap property+session creation in try/catch with rollback on failure
+  let property: any;
+  let propertyError: any;
+
+  try {
+    const result = await dataClient
+      .from("properties")
+      .insert({
+        org_id: orgId,
+        created_by: user.id,
+        title: body.title.trim(),
+        address: body.address?.trim() || null,
+        property_type: body.property_type || null,
+        price: body.price || null,
+        description: body.description?.trim() || null,
+        status: "draft",
+      })
+      .select()
+      .single();
+
+    property = result.data;
+    propertyError = result.error;
+  } catch (err) {
+    console.error("[Properties API] Property insert exception:", err);
+    return NextResponse.json(
+      { error: "Failed to create property" },
+      { status: 500 }
+    );
+  }
 
   if (propertyError || !property) {
     console.error("[Properties API] Property insert error:", propertyError);
@@ -143,21 +169,53 @@ export async function POST(request: NextRequest) {
   }
 
   // 7. Update property status to 'capturing'
-  await dataClient
+  const { error: statusUpdateError } = await dataClient
     .from("properties")
     .update({ status: "capturing" })
     .eq("id", property.id);
 
+  if (statusUpdateError) {
+    console.error("[Properties API] Status update error:", statusUpdateError);
+    // Rollback: delete the property if status update fails
+    await dataClient
+      .from("properties")
+      .delete()
+      .eq("id", property.id);
+    return NextResponse.json(
+      { error: "Failed to create property" },
+      { status: 500 }
+    );
+  }
+
   // 8. Create capture session
-  const { data: session, error: sessionError } = await dataClient
-    .from("capture_sessions")
-    .insert({
-      property_id: property.id,
-      created_by: user.id,
-      status: "started",
-    })
-    .select()
-    .single();
+  let session: any;
+  let sessionError: any;
+
+  try {
+    const result = await dataClient
+      .from("capture_sessions")
+      .insert({
+        property_id: property.id,
+        created_by: user.id,
+        status: "started",
+      })
+      .select()
+      .single();
+
+    session = result.data;
+    sessionError = result.error;
+  } catch (err) {
+    console.error("[Properties API] Session insert exception:", err);
+    // Rollback: archive the property
+    await dataClient
+      .from("properties")
+      .update({ status: "draft" })
+      .eq("id", property.id);
+    return NextResponse.json(
+      { error: "Failed to create capture session" },
+      { status: 500 }
+    );
+  }
 
   if (sessionError || !session) {
     console.error("[Properties API] Session insert error:", sessionError);

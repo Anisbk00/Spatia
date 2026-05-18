@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { RefreshCw } from "lucide-react";
 
 interface PipelineStage {
   stage: string;
@@ -42,14 +46,25 @@ const STAGE_ICONS = [
   { key: "failed", label: "Processing Failed", icon: "❌" },
 ];
 
+const BASE_INTERVAL_MS = 3000;
+const MAX_INTERVAL_MS = 30000;
+const STALE_POLL_THRESHOLD = 30;
+
 export function ProcessingStatus({ sessionId }: ProcessingStatusProps) {
   const router = useRouter();
   const [data, setData] = useState<ProcessingStatusData | null>(null);
   const [loading, setLoading] = useState(true);
   const [elapsedSec, setElapsedSec] = useState(0);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
+  const [isStale, setIsStale] = useState(false);
 
-  // Fetch status
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const currentIntervalRef = useRef(BASE_INTERVAL_MS);
+  const consecutivePollsRef = useRef(0);
+  const lastStageRef = useRef<string | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Fetch status with exponential backoff
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch(
@@ -59,37 +74,74 @@ export function ProcessingStatus({ sessionId }: ProcessingStatusProps) {
         const statusData: ProcessingStatusData = await res.json();
         setData(statusData);
 
+        // Reset error state on successful poll
+        setPollError(null);
+
+        // Reset backoff to base interval
+        currentIntervalRef.current = BASE_INTERVAL_MS;
+
+        // Track stale detection — reset on stage change
+        const currentStage = statusData.pipeline.stage;
+        if (currentStage !== lastStageRef.current) {
+          lastStageRef.current = currentStage;
+          consecutivePollsRef.current = 0;
+          setIsStale(false);
+        } else {
+          consecutivePollsRef.current += 1;
+          if (consecutivePollsRef.current >= STALE_POLL_THRESHOLD) {
+            setIsStale(true);
+          }
+        }
+
         // If complete, redirect to viewer
         if (
           statusData.pipeline.stage === "completed" &&
           statusData.scene?.modelUrl
         ) {
+          if (intervalRef.current) clearInterval(intervalRef.current);
+          if (timerRef.current) clearInterval(timerRef.current);
           router.push(`/view/${statusData.session.propertyId}`);
         }
+      } else {
+        throw new Error(`HTTP ${res.status}`);
       }
     } catch (err) {
       console.error("[ProcessingStatus] Status poll failed:", err);
-      // Network error — will retry on next poll
+      setPollError("Connection issue — retrying...");
+
+      // Exponential backoff on error
+      currentIntervalRef.current = Math.min(
+        currentIntervalRef.current * 2,
+        MAX_INTERVAL_MS
+      );
+
+      // Restart interval with new backoff
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      intervalRef.current = setInterval(fetchStatus, currentIntervalRef.current);
     } finally {
       setLoading(false);
     }
   }, [sessionId, router]);
 
-  // Poll every 3 seconds
+  // Poll with interval management
   useEffect(() => {
     fetchStatus();
-    intervalRef.current = setInterval(fetchStatus, 3000);
+    intervalRef.current = setInterval(fetchStatus, currentIntervalRef.current);
+
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [fetchStatus]);
 
   // Elapsed timer
   useEffect(() => {
-    const timer = setInterval(() => {
+    timerRef.current = setInterval(() => {
       setElapsedSec((prev) => prev + 1);
     }, 1000);
-    return () => clearInterval(timer);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, []);
 
   if (loading || !data) {
@@ -171,6 +223,28 @@ export function ProcessingStatus({ sessionId }: ProcessingStatusProps) {
         })}
       </div>
 
+      {/* Polling error */}
+      {pollError && (
+        <Alert variant="destructive">
+          <RefreshCw className="h-4 w-4" />
+          <AlertDescription className="flex items-center justify-between">
+            <span>{pollError}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-2 h-7 shrink-0"
+              onClick={() => {
+                setPollError(null);
+                currentIntervalRef.current = BASE_INTERVAL_MS;
+                fetchStatus();
+              }}
+            >
+              Retry Now
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Info */}
       <div className="rounded-xl bg-muted/50 p-4 text-center">
         <p className="text-sm text-muted-foreground">
@@ -178,17 +252,19 @@ export function ProcessingStatus({ sessionId }: ProcessingStatusProps) {
             ? "Processing failed. You can retry from the dashboard."
             : data.pipeline.stage === "completed"
               ? "Your 3D walkthrough is ready! Redirecting..."
-              : `Processing ${data.session.totalImages} images • ${formatTime(elapsedSec)} elapsed`}
+              : isStale
+                ? `Checking status... • ${formatTime(elapsedSec)} elapsed`
+                : `Processing ${data.session.totalImages} images • ${formatTime(elapsedSec)} elapsed`}
         </p>
       </div>
 
       {/* Failed state */}
       {isFailed && (
-        <a href="/dashboard">
+        <Link href="/dashboard">
           <button className="h-12 w-full rounded-xl bg-destructive text-base font-semibold text-white hover:bg-destructive/90">
             Return to Dashboard
           </button>
-        </a>
+        </Link>
       )}
     </div>
   );

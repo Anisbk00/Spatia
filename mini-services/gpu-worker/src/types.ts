@@ -3,6 +3,39 @@
 // for the enhanced GPU worker service.
 // ============================================
 
+// ---- Configuration constants ----
+
+/**
+ * When set to "true", pipeline stages run in simulated mode
+ * (compute deterministic values from artifacts instead of
+ * real GPU processing). Set via SIMULATED env var.
+ * Default: "true"
+ */
+export const SIMULATED = (process.env.SIMULATED || "true") === "true";
+
+/**
+ * Create a seeded pseudo-random number generator (mulberry32).
+ * Use scene_id as seed for deterministic, reproducible results.
+ */
+export function createSeededRandom(seed: string): () => number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = Math.imul(31, h) + seed.charCodeAt(i) | 0;
+  }
+  let s = h >>> 0;
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * UUID v4 validation regex.
+ */
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ---- Worker types ----
 
 export type WorkerStatus = "idle" | "busy" | "draining" | "offline" | "failed";
@@ -194,6 +227,11 @@ export interface AIEnhancement {
   completed_at: string | null;
 }
 
+/**
+ * Canonical DetectedRoom type.
+ * Includes both center (for spatial queries) and estimated_area_sqm
+ * (used by room-detection for area calculations).
+ */
 export interface DetectedRoom {
   type: string;
   confidence: number;
@@ -202,6 +240,7 @@ export interface DetectedRoom {
     max: [number, number, number];
   };
   center: [number, number, number];
+  estimated_area_sqm?: number;
 }
 
 // ---- Database type map for Supabase client ----

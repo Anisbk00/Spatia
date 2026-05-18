@@ -8,11 +8,6 @@
 import { createClient } from "@/lib/supabase/server";
 import type { SystemMonitoring, GPUMetric } from "@/lib/types";
 
-// Supabase join result types
-interface WorkerJoinResult {
-  gpu_type: string | null;
-}
-
 type GPUMetricRow = GPUMetric;
 
 // ============================================
@@ -458,6 +453,13 @@ export class MonitoringSystem {
    * Provides statistical distribution of scene processing times
    * with breakdowns by GPU type.
    *
+   * NOTE: The processing_jobs table does not have a worker_id column,
+   * so we cannot directly join jobs to workers to get GPU type.
+   * Instead, we query the gpu_metrics table (which has worker_id and
+   * is reported by workers periodically) and join through the workers
+   * table to get GPU type. The avg_processing_time_seconds from
+   * gpu_metrics is used as a proxy for per-GPU-type processing speed.
+   *
    * @returns Processing time distribution stats
    */
   async getProcessingTimeDistribution(): Promise<{
@@ -516,42 +518,54 @@ export class MonitoringSystem {
         };
       }
 
-      // Get processing times by GPU type via jobs -> workers
-      const { data: jobData } = await supabase
-        .from("processing_jobs")
-        .select(
-          "started_at, finished_at, scenes!inner(id), workers!inner(gpu_type)",
-        )
-        .eq("status", "completed")
-        .not("started_at", "is", null)
-        .not("finished_at", "is", null)
-        .limit(2000);
+      // Get processing times by GPU type.
+      // Since processing_jobs doesn't have worker_id, we use gpu_metrics
+      // (which reports avg_processing_time_seconds per worker) and join
+      // through workers to get gpu_type.
+      const { data: gpuMetrics, error: metricsError } = await supabase
+        .from("gpu_metrics")
+        .select("worker_id, avg_processing_time_seconds")
+        .not("avg_processing_time_seconds", "is", null)
+        .order("recorded_at", { ascending: false })
+        .limit(500);
 
       const byGpuType: Record<string, number[]> = {};
 
-      if (jobData) {
-        for (const job of jobData) {
-          const worker = job.workers as unknown as WorkerJoinResult;
-          const gpuType = worker?.gpu_type || "unknown";
+      if (!metricsError && gpuMetrics && gpuMetrics.length > 0) {
+        // Get unique worker IDs from gpu_metrics
+        const workerIds = [...new Set(gpuMetrics.map((m) => m.worker_id as string))];
 
-          const start = new Date(job.started_at as string).getTime();
-          const end = new Date(job.finished_at as string).getTime();
-          const duration = (end - start) / 1000;
+        // Get GPU types for these workers
+        const { data: workerGpuTypes } = await supabase
+          .from("workers")
+          .select("worker_id, gpu_type")
+          .in("worker_id", workerIds);
 
-          if (duration > 0) {
+        const gpuTypeMap = new Map(
+          (workerGpuTypes || []).map((w) => [w.worker_id as string, (w.gpu_type as string) || "unknown"]),
+        );
+
+        // Build per-GPU-type processing time arrays from gpu_metrics
+        for (const metric of gpuMetrics) {
+          const gpuType = gpuTypeMap.get(metric.worker_id as string) || "unknown";
+          const procTime = metric.avg_processing_time_seconds as number;
+
+          if (procTime > 0) {
             if (!byGpuType[gpuType]) byGpuType[gpuType] = [];
-            byGpuType[gpuType].push(duration);
+            byGpuType[gpuType].push(procTime);
           }
         }
       }
 
       const byGpuStats: Record<string, { avg: number; median: number }> = {};
       for (const [gpuType, gpuTimes] of Object.entries(byGpuType)) {
-        gpuTimes.sort((a, b) => a - b);
-        byGpuStats[gpuType] = {
-          avg: Math.round((gpuTimes.reduce((a, b) => a + b, 0) / gpuTimes.length) * 100) / 100,
-          median: Math.round(percentile(gpuTimes, 50) * 100) / 100,
-        };
+        if (gpuTimes.length > 0) {
+          gpuTimes.sort((a, b) => a - b);
+          byGpuStats[gpuType] = {
+            avg: Math.round((gpuTimes.reduce((a, b) => a + b, 0) / gpuTimes.length) * 100) / 100,
+            median: Math.round(percentile(gpuTimes, 50) * 100) / 100,
+          };
+        }
       }
 
       return {

@@ -114,6 +114,10 @@ export class EventTracker {
   private userAgent: string;
   private deviceType: string;
 
+  // Bound references for proper addEventListener/removeEventListener pairing
+  private _boundOnline: () => void;
+  private _boundBeforeUnload: () => void;
+
   private constructor() {
     // Auto-capture user agent (truncated to 256 chars for storage)
     this.userAgent =
@@ -124,16 +128,20 @@ export class EventTracker {
     // Auto-detect device type
     this.deviceType = this.detectDeviceType();
 
+    // Store bound references to fix memory leak on destroy
+    this._boundOnline = this.handleOnline.bind(this);
+    this._boundBeforeUnload = this.handleBeforeUnload.bind(this);
+
     // Restore offline events from localStorage
     this.restoreOfflineEvents();
 
     // Start periodic flush
     this.startFlushInterval();
 
-    // Listen for online/offline events
+    // Listen for online/offline events using stored references
     if (typeof window !== "undefined") {
-      window.addEventListener("online", this.handleOnline.bind(this));
-      window.addEventListener("beforeunload", this.handleBeforeUnload.bind(this));
+      window.addEventListener("online", this._boundOnline);
+      window.addEventListener("beforeunload", this._boundBeforeUnload);
     }
   }
 
@@ -279,9 +287,10 @@ export class EventTracker {
       this.flushIntervalId = null;
     }
 
+    // Use stored bound references for proper removal (fixes memory leak)
     if (typeof window !== "undefined") {
-      window.removeEventListener("online", this.handleOnline.bind(this));
-      window.removeEventListener("beforeunload", this.handleBeforeUnload.bind(this));
+      window.removeEventListener("online", this._boundOnline);
+      window.removeEventListener("beforeunload", this._boundBeforeUnload);
     }
 
     // Final flush attempt

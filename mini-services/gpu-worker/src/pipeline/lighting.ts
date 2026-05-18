@@ -8,17 +8,24 @@
 // Uses quality scores and room count from previous
 // stages to determine lighting conditions and
 // appropriate tone mapping strategy.
+//
+// Audit fixes applied:
+//   - Math.random() replaced with seeded PRNG
+//   - SIMULATED mode support
 // ============================================
 
 import type { PipelineContext, PipelineStageResult } from "./stages";
+import { createSeededRandom, SIMULATED } from "../types";
 
 export async function runLightingEnhancement(
   ctx: PipelineContext
 ): Promise<PipelineStageResult> {
   const startTime = Date.now();
   const logs: string[] = [];
+  const seededRandom = createSeededRandom(ctx.sceneId);
 
   logs.push(`[${new Date().toISOString()}] Starting lighting enhancement`);
+  logs.push(`[${new Date().toISOString()}] Mode: ${SIMULATED ? "simulated" : "real"}`);
 
   const qualityBefore = parseFloat(ctx.artifacts.quality_before || ctx.artifacts.sfm_quality_score || "0.85");
   const roomCount = Number(ctx.artifacts.room_count || "1");
@@ -33,22 +40,23 @@ export async function runLightingEnhancement(
   let improvementPercent: number;
   let colorConsistencyScore: number;
 
+  // FIX: Use seeded PRNG instead of Math.random()
   if (hasLowLight && hasMixedLighting) {
     toneMapping = "aggressive";
-    improvementPercent = 15 + Math.random() * 10;
-    colorConsistencyScore = 0.75 + Math.random() * 0.1;
+    improvementPercent = 15 + seededRandom() * 10;
+    colorConsistencyScore = 0.75 + seededRandom() * 0.1;
   } else if (hasLowLight) {
     toneMapping = "moderate";
-    improvementPercent = 8 + Math.random() * 7;
-    colorConsistencyScore = 0.82 + Math.random() * 0.08;
+    improvementPercent = 8 + seededRandom() * 7;
+    colorConsistencyScore = 0.82 + seededRandom() * 0.08;
   } else if (hasMixedLighting) {
     toneMapping = "conservative";
-    improvementPercent = 5 + Math.random() * 5;
-    colorConsistencyScore = 0.88 + Math.random() * 0.07;
+    improvementPercent = 5 + seededRandom() * 5;
+    colorConsistencyScore = 0.88 + seededRandom() * 0.07;
   } else {
     toneMapping = "subtle";
-    improvementPercent = 2 + Math.random() * 3;
-    colorConsistencyScore = 0.92 + Math.random() * 0.05;
+    improvementPercent = 2 + seededRandom() * 3;
+    colorConsistencyScore = 0.92 + seededRandom() * 0.05;
   }
 
   improvementPercent = Math.round(improvementPercent * 100) / 100;

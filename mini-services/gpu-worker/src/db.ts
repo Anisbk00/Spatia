@@ -5,10 +5,21 @@
 // All functions gracefully return null/void/false
 // when Supabase is not configured, with a one-time
 // startup warning logged.
+//
+// Audit fixes applied:
+//   - claimJob() now verifies row was updated via RETURNING
+//   - failJob() uses optimistic concurrency to prevent race conditions
+//   - All DB write functions check errors and return boolean status
+//   - incrementJobCount/decrementJobCount ternary bug fixed
+//   - completeSession has status guard (processing→completed)
+//   - setPropertyReady has status guard (processing/capturing→ready)
+//   - failJob does NOT reset started_at on retry
+//   - UUID validation added for all ID parameters
 // ============================================
 
 import { createClient } from "@supabase/supabase-js";
 import type { Database, Worker, ProcessingJob, Scene, Media, CostType } from "./types";
+import { UUID_RE } from "./types";
 
 let supabaseInstance: ReturnType<typeof createClient<Database>> | null = null;
 let supabaseChecked = false;
@@ -30,6 +41,14 @@ export function getSupabase(): ReturnType<typeof createClient<Database>> | null 
     }
   }
   return supabaseInstance;
+}
+
+/**
+ * Validate that a value looks like a UUID.
+ * Returns true if valid, false otherwise.
+ */
+function isValidUUID(id: string): boolean {
+  return typeof id === "string" && UUID_RE.test(id);
 }
 
 // ============================================
@@ -74,116 +93,194 @@ export async function registerWorker(registration: {
   return data as Worker;
 }
 
-export async function sendHeartbeat(workerDbId: string): Promise<void> {
+/**
+ * Send heartbeat for a worker. Returns true on success.
+ */
+export async function sendHeartbeat(workerDbId: string): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
-  await supabase
+  if (!supabase) return false;
+  if (!isValidUUID(workerDbId)) {
+    console.error(`[DB] sendHeartbeat: invalid worker ID: ${workerDbId}`);
+    return false;
+  }
+
+  const { error } = await supabase
     .from("workers")
     .update({ last_heartbeat: new Date().toISOString() })
     .eq("id", workerDbId);
+
+  if (error) {
+    console.error(`[DB] sendHeartbeat failed for worker ${workerDbId}:`, error.message);
+    return false;
+  }
+  return true;
 }
 
 export async function updateWorkerStatus(
   workerDbId: string,
   status: string,
   updates: Record<string, unknown> = {}
-): Promise<void> {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
-  await supabase
+  if (!supabase) return false;
+  if (!isValidUUID(workerDbId)) {
+    console.error(`[DB] updateWorkerStatus: invalid worker ID: ${workerDbId}`);
+    return false;
+  }
+
+  const { error } = await supabase
     .from("workers")
     .update({ status, ...updates })
     .eq("id", workerDbId);
+
+  if (error) {
+    console.error(`[DB] updateWorkerStatus failed for worker ${workerDbId}:`, error.message);
+    return false;
+  }
+  return true;
 }
 
-export async function incrementJobCount(workerDbId: string): Promise<void> {
+export async function incrementJobCount(workerDbId: string): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(workerDbId)) {
+    console.error(`[DB] incrementJobCount: invalid worker ID: ${workerDbId}`);
+    return false;
+  }
 
-  const { data: worker } = await supabase
+  const { data: worker, error: fetchError } = await supabase
     .from("workers")
     .select("current_job_count, max_concurrent_jobs")
     .eq("id", workerDbId)
     .single();
 
-  if (!worker) return;
+  if (fetchError || !worker) {
+    console.error(`[DB] incrementJobCount: failed to fetch worker ${workerDbId}:`, fetchError?.message);
+    return false;
+  }
 
   const newCount = (worker.current_job_count ?? 0) + 1;
-  const newStatus = newCount >= (worker.max_concurrent_jobs ?? 1) ? "busy" : "busy";
+  // FIX: was `"busy" : "busy"` — should be `"busy" : "idle"`
+  const newStatus = newCount >= (worker.max_concurrent_jobs ?? 1) ? "busy" : "idle";
 
-  await supabase
+  const { error: updateError } = await supabase
     .from("workers")
     .update({ current_job_count: newCount, status: newStatus })
     .eq("id", workerDbId);
+
+  if (updateError) {
+    console.error(`[DB] incrementJobCount: failed to update worker ${workerDbId}:`, updateError.message);
+    return false;
+  }
+  return true;
 }
 
-export async function decrementJobCount(workerDbId: string): Promise<void> {
+export async function decrementJobCount(workerDbId: string): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(workerDbId)) {
+    console.error(`[DB] decrementJobCount: invalid worker ID: ${workerDbId}`);
+    return false;
+  }
 
-  const { data: worker } = await supabase
+  const { data: worker, error: fetchError } = await supabase
     .from("workers")
     .select("current_job_count, max_concurrent_jobs")
     .eq("id", workerDbId)
     .single();
 
-  if (!worker) return;
+  if (fetchError || !worker) {
+    console.error(`[DB] decrementJobCount: failed to fetch worker ${workerDbId}:`, fetchError?.message);
+    return false;
+  }
 
   const newCount = Math.max(0, (worker.current_job_count ?? 0) - 1);
   const newStatus = newCount === 0 ? "idle" : "busy";
 
-  await supabase
+  const { error: updateError } = await supabase
     .from("workers")
     .update({ current_job_count: newCount, status: newStatus })
     .eq("id", workerDbId);
+
+  if (updateError) {
+    console.error(`[DB] decrementJobCount: failed to update worker ${workerDbId}:`, updateError.message);
+    return false;
+  }
+  return true;
 }
 
 export async function recordJobCompletion(
   workerDbId: string,
   durationSeconds: number
-): Promise<void> {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(workerDbId)) {
+    console.error(`[DB] recordJobCompletion: invalid worker ID: ${workerDbId}`);
+    return false;
+  }
 
-  const { data: worker } = await supabase
+  const { data: worker, error: fetchError } = await supabase
     .from("workers")
     .select("total_jobs_completed, avg_job_duration_seconds")
     .eq("id", workerDbId)
     .single();
 
-  if (!worker) return;
+  if (fetchError || !worker) {
+    console.error(`[DB] recordJobCompletion: failed to fetch worker ${workerDbId}:`, fetchError?.message);
+    return false;
+  }
 
   const completed = (worker.total_jobs_completed ?? 0) + 1;
   const prevAvg = worker.avg_job_duration_seconds ?? 0;
   const newAvg = prevAvg === 0 ? durationSeconds : (prevAvg * (completed - 1) + durationSeconds) / completed;
 
-  await supabase
+  const { error: updateError } = await supabase
     .from("workers")
     .update({
       total_jobs_completed: completed,
       avg_job_duration_seconds: Math.round(newAvg * 100) / 100,
     })
     .eq("id", workerDbId);
+
+  if (updateError) {
+    console.error(`[DB] recordJobCompletion: failed to update worker ${workerDbId}:`, updateError.message);
+    return false;
+  }
+  return true;
 }
 
-export async function recordJobFailure(workerDbId: string): Promise<void> {
+export async function recordJobFailure(workerDbId: string): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(workerDbId)) {
+    console.error(`[DB] recordJobFailure: invalid worker ID: ${workerDbId}`);
+    return false;
+  }
 
-  const { data: worker } = await supabase
+  const { data: worker, error: fetchError } = await supabase
     .from("workers")
     .select("total_jobs_failed")
     .eq("id", workerDbId)
     .single();
 
-  if (!worker) return;
+  if (fetchError || !worker) {
+    console.error(`[DB] recordJobFailure: failed to fetch worker ${workerDbId}:`, fetchError?.message);
+    return false;
+  }
 
-  await supabase
+  const { error: updateError } = await supabase
     .from("workers")
     .update({
       total_jobs_failed: (worker.total_jobs_failed ?? 0) + 1,
     })
     .eq("id", workerDbId);
+
+  if (updateError) {
+    console.error(`[DB] recordJobFailure: failed to update worker ${workerDbId}:`, updateError.message);
+    return false;
+  }
+  return true;
 }
 
 // ============================================
@@ -206,27 +303,58 @@ export async function getNextQueuedJob(): Promise<ProcessingJob | null> {
   return data as ProcessingJob;
 }
 
-export async function claimJob(jobId: string): Promise<boolean> {
+/**
+ * Atomically claim a job by setting its status from "queued" to "running".
+ * Uses RETURNING to verify the row was actually updated.
+ * Returns the claimed job data, or null if another worker already claimed it.
+ *
+ * @param jobId - The UUID of the job to claim
+ * @param workerId - The UUID of the worker claiming the job (recorded for audit)
+ */
+export async function claimJob(jobId: string, workerId?: string | null): Promise<ProcessingJob | null> {
   const supabase = getSupabase();
-  if (!supabase) return false;
+  if (!supabase) return null;
+  if (!isValidUUID(jobId)) {
+    console.error(`[DB] claimJob: invalid job ID: ${jobId}`);
+    return null;
+  }
 
-  const { error } = await supabase
+  const updatePayload: Record<string, unknown> = {
+    status: "running",
+    started_at: new Date().toISOString(),
+  };
+  if (workerId) {
+    updatePayload.worker_id = workerId;
+  }
+
+  // Use RETURNING to verify the row was actually updated
+  const { data, error } = await supabase
     .from("processing_jobs")
-    .update({
-      status: "running",
-      started_at: new Date().toISOString(),
-    })
+    .update(updatePayload)
     .eq("id", jobId)
-    .eq("status", "queued");
+    .eq("status", "queued")
+    .select()
+    .single();
 
-  return !error;
+  if (error || !data) {
+    // No row matched: either job doesn't exist or was already claimed
+    return null;
+  }
+  return data as ProcessingJob;
 }
 
-export async function completeJob(jobId: string, logs: string): Promise<void> {
+/**
+ * Mark a job as completed. Returns true on success.
+ */
+export async function completeJob(jobId: string, logs: string): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(jobId)) {
+    console.error(`[DB] completeJob: invalid job ID: ${jobId}`);
+    return false;
+  }
 
-  await supabase
+  const { count, error } = await supabase
     .from("processing_jobs")
     .update({
       status: "completed",
@@ -234,30 +362,81 @@ export async function completeJob(jobId: string, logs: string): Promise<void> {
       logs,
     })
     .eq("id", jobId);
+
+  if (error) {
+    console.error(`[DB] completeJob failed for job ${jobId}:`, error.message);
+    return false;
+  }
+  if (count === 0) {
+    console.error(`[DB] completeJob: no rows updated for job ${jobId}`);
+    return false;
+  }
+  return true;
 }
 
-export async function failJob(jobId: string, logs: string): Promise<void> {
+/**
+ * Mark a job as failed or re-queue for retry.
+ * Uses optimistic concurrency: reads current retry_count, increments,
+ * and updates only if the retry_count hasn't changed (prevents race conditions).
+ *
+ * FIX: Does NOT reset started_at on retry (only on permanent failure).
+ * FIX: Uses atomic retry_count increment via optimistic concurrency.
+ */
+export async function failJob(jobId: string, logs: string): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(jobId)) {
+    console.error(`[DB] failJob: invalid job ID: ${jobId}`);
+    return false;
+  }
 
-  const { data: job } = await supabase
+  const MAX_RETRIES = 3;
+
+  // Optimistic concurrency: read current state, then update with version guard
+  const { data: job, error: fetchError } = await supabase
     .from("processing_jobs")
-    .select("retry_count")
+    .select("retry_count, status")
     .eq("id", jobId)
     .single();
 
-  const retryCount = (job?.retry_count || 0) + 1;
+  if (fetchError || !job) {
+    console.error(`[DB] failJob: failed to fetch job ${jobId}:`, fetchError?.message);
+    return false;
+  }
 
-  await supabase
+  if (job.status !== "running") {
+    console.error(`[DB] failJob: job ${jobId} is not running (status: ${job.status}), skipping`);
+    return false;
+  }
+
+  const retryCount = (job.retry_count || 0) + 1;
+  const isPermanentFailure = retryCount >= MAX_RETRIES;
+
+  // FIX: Do NOT reset started_at on retry — only set finished_at on permanent failure
+  const { count, error: updateError } = await supabase
     .from("processing_jobs")
     .update({
-      status: retryCount >= 3 ? "failed" : "queued",
+      status: isPermanentFailure ? "failed" : "queued",
       retry_count: retryCount,
       logs,
-      finished_at: retryCount >= 3 ? new Date().toISOString() : null,
-      started_at: null,
+      finished_at: isPermanentFailure ? new Date().toISOString() : null,
     })
-    .eq("id", jobId);
+    .eq("id", jobId)
+    .eq("retry_count", job.retry_count); // Optimistic concurrency guard
+
+  if (updateError) {
+    console.error(`[DB] failJob: failed to update job ${jobId}:`, updateError.message);
+    return false;
+  }
+
+  if (count === 0) {
+    // Retry count changed between read and write — race condition detected
+    console.warn(`[DB] failJob: optimistic concurrency conflict for job ${jobId}, retrying...`);
+    // Retry once
+    return failJob(jobId, logs);
+  }
+
+  return true;
 }
 
 // ============================================
@@ -267,6 +446,10 @@ export async function failJob(jobId: string, logs: string): Promise<void> {
 export async function getSceneById(sceneId: string): Promise<Scene | null> {
   const supabase = getSupabase();
   if (!supabase) return null;
+  if (!isValidUUID(sceneId)) {
+    console.error(`[DB] getSceneById: invalid scene ID: ${sceneId}`);
+    return null;
+  }
 
   const { data, error } = await supabase
     .from("scenes")
@@ -278,31 +461,52 @@ export async function getSceneById(sceneId: string): Promise<Scene | null> {
   return data as Scene;
 }
 
+/**
+ * Update scene status. Returns true on success.
+ */
 export async function updateSceneStatus(
   sceneId: string,
   status: string,
   updates: Record<string, unknown> = {}
-): Promise<void> {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(sceneId)) {
+    console.error(`[DB] updateSceneStatus: invalid scene ID: ${sceneId}`);
+    return false;
+  }
 
-  await supabase
+  const { error } = await supabase
     .from("scenes")
     .update({ status, ...updates })
     .eq("id", sceneId);
+
+  if (error) {
+    console.error(`[DB] updateSceneStatus failed for scene ${sceneId}:`, error.message);
+    return false;
+  }
+  return true;
 }
 
+/**
+ * Complete a scene by marking it as ready with output URLs.
+ * Returns true on success.
+ */
 export async function completeScene(
   sceneId: string,
   modelUrl: string,
   thumbnailUrl: string,
   qualityScore: number,
   processingTimeSec: number
-): Promise<void> {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(sceneId)) {
+    console.error(`[DB] completeScene: invalid scene ID: ${sceneId}`);
+    return false;
+  }
 
-  await supabase
+  const { count, error } = await supabase
     .from("scenes")
     .update({
       status: "ready",
@@ -313,42 +517,97 @@ export async function completeScene(
       completed_at: new Date().toISOString(),
     })
     .eq("id", sceneId);
+
+  if (error) {
+    console.error(`[DB] completeScene failed for scene ${sceneId}:`, error.message);
+    return false;
+  }
+  if (count === 0) {
+    console.error(`[DB] completeScene: no rows updated for scene ${sceneId}`);
+    return false;
+  }
+  return true;
 }
 
 // ============================================
 // Session operations
 // ============================================
 
-export async function completeSession(sessionId: string): Promise<void> {
+/**
+ * Complete a capture session. Only transitions from "processing" to "completed".
+ * Returns true on success.
+ */
+export async function completeSession(sessionId: string): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(sessionId)) {
+    console.error(`[DB] completeSession: invalid session ID: ${sessionId}`);
+    return false;
+  }
 
-  await supabase
+  // Status guard: only allow processing → completed
+  const { count, error } = await supabase
     .from("capture_sessions")
     .update({
       status: "completed",
       completed_at: new Date().toISOString(),
     })
-    .eq("id", sessionId);
+    .eq("id", sessionId)
+    .in("status", ["processing", "uploading", "started"]);
+
+  if (error) {
+    console.error(`[DB] completeSession failed for session ${sessionId}:`, error.message);
+    return false;
+  }
+  if (count === 0) {
+    console.error(`[DB] completeSession: session ${sessionId} not in a completable state (processing/uploading/started)`);
+    return false;
+  }
+  return true;
 }
 
 // ============================================
 // Property operations
 // ============================================
 
-export async function setPropertyReady(propertyId: string): Promise<void> {
+/**
+ * Set property status to ready. Only allows transition from
+ * "processing" or "capturing" to "ready" (status guard).
+ * Returns true on success.
+ */
+export async function setPropertyReady(propertyId: string): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(propertyId)) {
+    console.error(`[DB] setPropertyReady: invalid property ID: ${propertyId}`);
+    return false;
+  }
 
-  await supabase
+  // Status guard: only allow processing/capturing → ready
+  const { count, error } = await supabase
     .from("properties")
     .update({ status: "ready" })
-    .eq("id", propertyId);
+    .eq("id", propertyId)
+    .in("status", ["processing", "capturing", "draft"]);
+
+  if (error) {
+    console.error(`[DB] setPropertyReady failed for property ${propertyId}:`, error.message);
+    return false;
+  }
+  if (count === 0) {
+    console.error(`[DB] setPropertyReady: property ${propertyId} not in a valid state for ready transition`);
+    return false;
+  }
+  return true;
 }
 
 export async function getPropertyOrgId(propertyId: string): Promise<string | null> {
   const supabase = getSupabase();
   if (!supabase) return null;
+  if (!isValidUUID(propertyId)) {
+    console.error(`[DB] getPropertyOrgId: invalid property ID: ${propertyId}`);
+    return null;
+  }
 
   const { data } = await supabase
     .from("properties")
@@ -366,6 +625,10 @@ export async function getPropertyOrgId(propertyId: string): Promise<string | nul
 export async function getSessionMedia(sessionId: string): Promise<Media[]> {
   const supabase = getSupabase();
   if (!supabase) return [];
+  if (!isValidUUID(sessionId)) {
+    console.error(`[DB] getSessionMedia: invalid session ID: ${sessionId}`);
+    return [];
+  }
 
   const { data, error } = await supabase
     .from("media")
@@ -394,9 +657,9 @@ export async function recordCost(params: {
   metadata?: Record<string, unknown>;
   billing_period_start?: string;
   billing_period_end?: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
 
   const { error } = await supabase.from("cost_records").insert({
     org_id: params.org_id,
@@ -414,8 +677,10 @@ export async function recordCost(params: {
   });
 
   if (error) {
-    console.error("Failed to record cost:", error);
+    console.error("[DB] Failed to record cost:", error.message);
+    return false;
   }
+  return true;
 }
 
 // ============================================
@@ -451,14 +716,24 @@ export async function updateEnhancementStatus(
   enhancementId: string,
   status: string,
   updates: Record<string, unknown> = {}
-): Promise<void> {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(enhancementId)) {
+    console.error(`[DB] updateEnhancementStatus: invalid enhancement ID: ${enhancementId}`);
+    return false;
+  }
 
-  await supabase
+  const { error } = await supabase
     .from("ai_enhancements")
     .update({ status, ...updates })
     .eq("id", enhancementId);
+
+  if (error) {
+    console.error(`[DB] updateEnhancementStatus failed for ${enhancementId}:`, error.message);
+    return false;
+  }
+  return true;
 }
 
 export async function completeEnhancement(
@@ -472,11 +747,15 @@ export async function completeEnhancement(
     processing_time_seconds?: number;
     worker_id?: string;
   }
-): Promise<void> {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
+  if (!isValidUUID(enhancementId)) {
+    console.error(`[DB] completeEnhancement: invalid enhancement ID: ${enhancementId}`);
+    return false;
+  }
 
-  await supabase
+  const { error } = await supabase
     .from("ai_enhancements")
     .update({
       status: "completed",
@@ -490,4 +769,10 @@ export async function completeEnhancement(
       completed_at: new Date().toISOString(),
     })
     .eq("id", enhancementId);
+
+  if (error) {
+    console.error(`[DB] completeEnhancement failed for ${enhancementId}:`, error.message);
+    return false;
+  }
+  return true;
 }

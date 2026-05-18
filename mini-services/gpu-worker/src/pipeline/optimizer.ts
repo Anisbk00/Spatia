@@ -6,9 +6,13 @@
 //
 // Calculates splat count based on actual point cloud
 // data and quality scores from previous stages.
+//
+// Audit fixes applied:
+//   - SIMULATED mode support
 // ============================================
 
 import type { PipelineContext, PipelineStageResult } from "./stages";
+import { SIMULATED } from "../types";
 
 interface GaussianSplat {
   splatCount: number;
@@ -23,6 +27,7 @@ export async function runSplatGeneration(
   const logs: string[] = [];
 
   logs.push(`[${new Date().toISOString()}] Starting Gaussian Splat generation`);
+  logs.push(`[${new Date().toISOString()}] Mode: ${SIMULATED ? "simulated" : "real"}`);
 
   const pointCloudData = JSON.parse(ctx.artifacts.point_cloud || "{}");
   const basePointCount = pointCloudData.points || 100000;

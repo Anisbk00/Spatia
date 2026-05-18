@@ -42,6 +42,17 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Verify user has agent/admin role
+  const { data: profile } = await writeClient
+    .from("users")
+    .select("role")
+    .eq("id", user.id)
+    .single();
+
+  if (!profile || (profile.role !== "agent" && profile.role !== "admin")) {
+    return NextResponse.json({ error: "Forbidden — agent/admin required" }, { status: 403 });
+  }
+
   // Get org_id — use admin client to bypass RLS on organization_members
   let orgId: string | null = null;
   try {

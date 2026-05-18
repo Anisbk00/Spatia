@@ -36,6 +36,19 @@ export async function POST(
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
+  // 2b. Verify org ownership
+  const sessionOrgId = (session.properties as unknown as { org_id: string | null })?.org_id;
+  if (sessionOrgId) {
+    const { data: member } = await dataClient
+      .from("organization_members")
+      .select("id")
+      .eq("org_id", sessionOrgId)
+      .eq("user_id", user.id)
+      .in("role", ["owner", "agent"])
+      .maybeSingle();
+    if (!member) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   // Verify user is agent/admin of the org
   const { data: profile } = await dataClient
     .from("users")
@@ -47,7 +60,24 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  // 3. Update session status → 'processing'
+  // 3. Check for duplicate scene before creating (race condition guard)
+  const { data: existingScene } = await dataClient
+    .from("scenes")
+    .select("id, status")
+    .eq("session_id", session_id)
+    .limit(1)
+    .maybeSingle();
+
+  if (existingScene) {
+    // Scene already exists for this session — return it instead of creating a duplicate
+    return NextResponse.json({
+      sessionId: session_id,
+      sceneId: existingScene.id,
+      status: existingScene.status,
+    });
+  }
+
+  // 4. Update session status → 'processing'
   const { error: sessionError } = await dataClient
     .from("capture_sessions")
     .update({
@@ -64,13 +94,13 @@ export async function POST(
     );
   }
 
-  // 4. Update property status → 'processing'
+  // 5. Update property status → 'processing'
   await dataClient
     .from("properties")
     .update({ status: "processing" })
     .eq("id", session.property_id);
 
-  // 5. Create scene record
+  // 6. Create scene record
   const { data: scene, error: sceneError } = await dataClient
     .from("scenes")
     .insert({
@@ -89,7 +119,7 @@ export async function POST(
     );
   }
 
-  // 6. Create processing job: SfM reconstruction
+  // 7. Create processing job: SfM reconstruction
   const { error: jobError } = await dataClient
     .from("processing_jobs")
     .insert({
@@ -103,7 +133,7 @@ export async function POST(
     // Non-fatal: the scene exists, job can be retried later
   }
 
-  // 7. Return success
+  // 8. Return success
   return NextResponse.json({
     sessionId: session_id,
     sceneId: scene.id,

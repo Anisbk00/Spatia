@@ -6,9 +6,13 @@
 //
 // Calculates sizes based on actual splat data,
 // SH degree, and applies data-driven compression.
+//
+// Audit fixes applied:
+//   - SIMULATED mode support
 // ============================================
 
 import type { PipelineContext, PipelineStageResult } from "./stages";
+import { SIMULATED } from "../types";
 
 interface OptimizedScene {
   originalSizeMB: number;
@@ -24,6 +28,7 @@ export async function runSceneOptimization(
   const logs: string[] = [];
 
   logs.push(`[${new Date().toISOString()}] Starting scene optimization`);
+  logs.push(`[${new Date().toISOString()}] Mode: ${SIMULATED ? "simulated" : "real"}`);
 
   const splatCount = Number(ctx.artifacts.splat_count || "70000");
   const shDegree = Number(ctx.artifacts.sh_degree || "2");

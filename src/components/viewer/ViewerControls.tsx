@@ -22,6 +22,7 @@ interface ViewerControlsProps {
 export function ViewerControls({ viewerState, propertyTitle, shareUrl }: ViewerControlsProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showShareToast, setShowShareToast] = useState(false);
+  const [copyError, setCopyError] = useState(false);
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -44,17 +45,12 @@ export function ViewerControls({ viewerState, propertyTitle, shareUrl }: ViewerC
     try {
       await navigator.clipboard.writeText(shareUrl);
       setShowShareToast(true);
+      setCopyError(false);
       setTimeout(() => setShowShareToast(false), 2000);
     } catch (err) {
-      console.error("[ViewerControls] Clipboard API failed, using fallback:", err);
-      const input = document.createElement("input");
-      input.value = shareUrl;
-      document.body.appendChild(input);
-      input.select();
-      document.execCommand("copy");
-      document.body.removeChild(input);
-      setShowShareToast(true);
-      setTimeout(() => setShowShareToast(false), 2000);
+      console.error("[ViewerControls] Clipboard API failed:", err);
+      setCopyError(true);
+      setTimeout(() => setCopyError(false), 3000);
     }
   }, [shareUrl]);
 
@@ -166,6 +162,15 @@ export function ViewerControls({ viewerState, propertyTitle, shareUrl }: ViewerC
         <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="rounded-full bg-emerald-600 px-4 py-2 text-sm text-white shadow-lg">
             Link copied to clipboard
+          </div>
+        </div>
+      )}
+
+      {/* Copy error toast */}
+      {copyError && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="rounded-full bg-red-600 px-4 py-2 text-sm text-white shadow-lg">
+            Unable to copy — clipboard access denied
           </div>
         </div>
       )}

@@ -5,46 +5,83 @@
 import { getSupabase } from "./db";
 
 const SCENES_BUCKET = "scene-outputs";
+let storageInitialized = false;
+
+export async function initializeStorage(): Promise<void> {
+  if (storageInitialized) return;
+
+  const supabase = getSupabase();
+
+  const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+  if (listError) {
+    throw new Error(`Failed to list storage buckets: ${listError.message}`);
+  }
+
+  const bucketExists = buckets?.some((b) => b.id === SCENES_BUCKET);
+
+  if (!bucketExists) {
+    const { error: createError } = await supabase.storage.createBucket(SCENES_BUCKET, {
+      public: true,
+      fileSizeLimit: 500 * 1024 * 1024, // 500MB
+    });
+    if (createError) {
+      throw new Error(`Failed to create bucket "${SCENES_BUCKET}": ${createError.message}`);
+    }
+  }
+
+  storageInitialized = true;
+}
 
 /**
- * Upload a file to Supabase Storage.
- * Creates the bucket if it doesn't exist.
+ * Upload a file to Supabase Storage with retry logic.
+ * Retries up to 3 times with exponential backoff on transient failures.
  */
 export async function uploadToStorage(
   path: string,
   data: Blob | Buffer | string,
   contentType: string = "application/json"
 ): Promise<string> {
+  await initializeStorage();
+
   const supabase = getSupabase();
+  const MAX_RETRIES = 3;
+  const INITIAL_BACKOFF_MS = 1000;
+  let lastError: Error | null = null;
 
-  // Ensure bucket exists
-  const { data: buckets } = await supabase.storage.listBuckets();
-  const bucketExists = buckets?.some((b) => b.id === SCENES_BUCKET);
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const { error } = await supabase.storage
+      .from(SCENES_BUCKET)
+      .upload(path, data, {
+        contentType,
+        upsert: true,
+      });
 
-  if (!bucketExists) {
-    await supabase.storage.createBucket(SCENES_BUCKET, {
-      public: true,
-      fileSizeLimit: 500 * 1024 * 1024, // 500MB
-    });
+    if (!error) {
+      const { data: urlData } = supabase.storage
+        .from(SCENES_BUCKET)
+        .getPublicUrl(path);
+
+      return urlData.publicUrl;
+    }
+
+    lastError = error instanceof Error ? error : new Error(String(error));
+
+    const isTransient =
+      (error.message?.toLowerCase().includes("network") ||
+        error.message?.toLowerCase().includes("timeout") ||
+        error.message?.toLowerCase().includes("econnrefused") ||
+        error.message?.toLowerCase().includes("socket hang up") ||
+        (error.statusCode !== undefined && error.statusCode >= 500));
+
+    if (!isTransient || attempt >= MAX_RETRIES - 1) {
+      break;
+    }
+
+    const backoff = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+    await new Promise((resolve) => setTimeout(resolve, backoff));
   }
 
-  const { error } = await supabase.storage
-    .from(SCENES_BUCKET)
-    .upload(path, data, {
-      contentType,
-      upsert: true,
-    });
-
-  if (error) {
-    console.error(`Storage upload error (${path}):`, error);
-    throw new Error(`Failed to upload ${path}: ${error.message}`);
-  }
-
-  const { data: urlData } = supabase.storage
-    .from(SCENES_BUCKET)
-    .getPublicUrl(path);
-
-  return urlData.publicUrl;
+  throw new Error(`Failed to upload ${path} after ${MAX_RETRIES} attempts: ${lastError?.message}`);
 }
 
 /**

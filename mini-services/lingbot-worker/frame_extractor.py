@@ -8,6 +8,7 @@ Features:
 - Frame quality validation (blur detection)
 - Subprocess FFmpeg fallback if OpenCV fails
 - Metadata extraction (resolution, FPS, duration, frame count)
+- Early error when blur filtering removes all frames
 """
 
 from __future__ import annotations
@@ -79,6 +80,18 @@ def extract_frames(
 
     # Filter blurry frames
     result = _filter_blurry_frames(result, blur_threshold=100.0)
+
+    # Early error if blur filtering removed all frames
+    if result.frame_count == 0:
+        logger.error(
+            "All frames were filtered out as blurry — "
+            "cannot proceed with zero frames"
+        )
+        result.log += (
+            "\nERROR: All frames filtered as blurry (Laplacian variance below threshold). "
+            "Consider lowering the blur threshold or using a video with sharper frames."
+        )
+        return result
 
     logger.info(
         f"Extracted {result.frame_count} frames "
@@ -330,7 +343,9 @@ def _filter_blurry_frames(
 ) -> FrameExtractionResult:
     """Remove blurry frames from the extraction result.
 
-    Uses Laplacian variance to detect blur.
+    Uses Laplacian variance to detect blur. Returns the result with
+    zero frame_count if all frames are filtered out (caller should
+    handle this as an error condition).
     """
     if result.frame_count == 0:
         return result

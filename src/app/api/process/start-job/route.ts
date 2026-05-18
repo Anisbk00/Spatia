@@ -39,6 +39,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
+  // Verify org ownership
+  const sessionOrgId = (session.properties as unknown as { org_id: string | null })?.org_id;
+  if (sessionOrgId) {
+    const { data: member } = await dataClient
+      .from("organization_members")
+      .select("id")
+      .eq("org_id", sessionOrgId)
+      .eq("user_id", user.id)
+      .in("role", ["owner", "agent"])
+      .maybeSingle();
+    if (!member) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   // Verify agent/admin role
   const { data: profile } = await dataClient
     .from("users")

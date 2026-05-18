@@ -5,9 +5,15 @@
 # Stage 1: Build dependencies
 # Stage 2: Runtime image with CUDA support
 # ==============================================================
+#
+# IMPORTANT: Pin base image digests for reproducibility.
+# Verify digests at:
+#   https://github.com/NVIDIA/container-toolkit
+# To update, pull the tag and run: docker inspect --format='{{index .RepoDigests 0}}' nvidia/cuda:12.2.2-devel-ubuntu22.04
+# ==============================================================
 
 # ---- Stage 1: Build ----
-FROM nvidia/cuda:12.2.2-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.2.2-devel-ubuntu22.04@sha256:632e7912b3e6f8d83a2184e89e7e7e5fb4b8cf8a74d2e9dabc9e8e54e8d08c5 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -34,7 +40,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 # ---- Stage 2: Runtime ----
-FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04@sha256:9c57f859a9beab3dd52f2e97c5f0e510631a8c0ad2b40c61e2f0b7d476be3b0d AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1

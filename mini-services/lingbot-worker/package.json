@@ -4,7 +4,7 @@
   "private": true,
   "description": "LingBot-Map GPU Worker for Spatia 3D Reconstruction Pipeline",
   "scripts": {
-    "dev": ".venv/bin/python3 index.py",
-    "start": ".venv/bin/python3 index.py"
+    "dev": "/opt/venv/bin/python3 index.py",
+    "start": "/opt/venv/bin/python3 index.py"
   }
 }

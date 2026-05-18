@@ -7,6 +7,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Service not configured" }, { status: 503 });
   }
 
+  // Authenticate user
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
   const session_id = searchParams.get("session_id");
 

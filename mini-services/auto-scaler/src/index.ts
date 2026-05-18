@@ -15,8 +15,8 @@
 //     1. Get current system state
 //     2. Evaluate scaling thresholds
 //     3. Scale up/down if needed (SIMULATED)
-//     4. Prioritize paid users in queue
-//     5. Delay free-tier jobs if overloaded
+//     4. Prioritize paid users in queue (metadata.priority_order)
+//     5. Delay free-tier jobs if overloaded (metadata.priority_order)
 //     6. Log decision to system_logs
 //   Shutdown → Log exit
 // ============================================
@@ -78,17 +78,62 @@ interface ScalerConfig {
   supabaseServiceKey: string;
 }
 
+/**
+ * Load configuration from environment variables with validation.
+ * Throws if validation fails — the service should not start with bad config.
+ */
 function loadConfig(): ScalerConfig {
+  const scaleUpThreshold = parseInt(process.env.SCALE_UP_THRESHOLD || "10", 10);
+  const scaleDownThreshold = parseInt(process.env.SCALE_DOWN_THRESHOLD || "2", 10);
+  const minWorkers = parseInt(process.env.MIN_WORKERS || "1", 10);
+  const maxWorkers = parseInt(process.env.MAX_WORKERS || "10", 10);
+  const cooldownSeconds = parseInt(process.env.COOLDOWN_SECONDS || "300", 10);
+  const freeTierDelayThreshold = parseInt(process.env.FREE_TIER_DELAY_THRESHOLD || "15", 10);
+  const evaluationIntervalMs = parseInt(process.env.EVALUATION_INTERVAL_MS || "60000", 10);
+  const supabaseUrl = process.env.SUPABASE_URL || "";
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY || "";
+
+  // --- Validation ---
+  const numericFields: Record<string, number> = {
+    SCALE_UP_THRESHOLD: scaleUpThreshold,
+    SCALE_DOWN_THRESHOLD: scaleDownThreshold,
+    MIN_WORKERS: minWorkers,
+    MAX_WORKERS: maxWorkers,
+    COOLDOWN_SECONDS: cooldownSeconds,
+    FREE_TIER_DELAY_THRESHOLD: freeTierDelayThreshold,
+    EVALUATION_INTERVAL_MS: evaluationIntervalMs,
+  };
+
+  for (const [name, value] of Object.entries(numericFields)) {
+    if (isNaN(value) || !isFinite(value) || value < 0) {
+      throw new Error(
+        `Invalid configuration: ${name} must be a positive number, got ${process.env[name] || "undefined"}`
+      );
+    }
+  }
+
+  if (scaleUpThreshold <= scaleDownThreshold) {
+    throw new Error(
+      `Invalid configuration: SCALE_UP_THRESHOLD (${scaleUpThreshold}) must be greater than SCALE_DOWN_THRESHOLD (${scaleDownThreshold})`
+    );
+  }
+
+  if (minWorkers > maxWorkers) {
+    throw new Error(
+      `Invalid configuration: MIN_WORKERS (${minWorkers}) must be less than or equal to MAX_WORKERS (${maxWorkers})`
+    );
+  }
+
   return {
-    scaleUpThreshold: parseInt(process.env.SCALE_UP_THRESHOLD || "10", 10),
-    scaleDownThreshold: parseInt(process.env.SCALE_DOWN_THRESHOLD || "2", 10),
-    minWorkers: parseInt(process.env.MIN_WORKERS || "1", 10),
-    maxWorkers: parseInt(process.env.MAX_WORKERS || "10", 10),
-    cooldownSeconds: parseInt(process.env.COOLDOWN_SECONDS || "300", 10),
-    freeTierDelayThreshold: parseInt(process.env.FREE_TIER_DELAY_THRESHOLD || "15", 10),
-    evaluationIntervalMs: parseInt(process.env.EVALUATION_INTERVAL_MS || "60000", 10),
-    supabaseUrl: process.env.SUPABASE_URL || "",
-    supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY || "",
+    scaleUpThreshold,
+    scaleDownThreshold,
+    minWorkers,
+    maxWorkers,
+    cooldownSeconds,
+    freeTierDelayThreshold,
+    evaluationIntervalMs,
+    supabaseUrl,
+    supabaseServiceKey,
   };
 }
 
@@ -130,6 +175,43 @@ interface HealthStatus {
 }
 
 // ============================================
+// Structured Logging
+// ============================================
+
+/**
+ * Emit a structured JSON log line to stdout.
+ * All fields are included: timestamp, level, source, message, context.
+ */
+function structuredLog(
+  level: "debug" | "info" | "warn" | "error" | "fatal",
+  source: string,
+  message: string,
+  context: Record<string, unknown> = {}
+): void {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level: level.toUpperCase(),
+    source,
+    message,
+    ...context,
+  };
+
+  const jsonLine = JSON.stringify(entry);
+
+  switch (level) {
+    case "error":
+    case "fatal":
+      console.error(jsonLine);
+      break;
+    case "warn":
+      console.warn(jsonLine);
+      break;
+    default:
+      console.log(jsonLine);
+  }
+}
+
+// ============================================
 // Supabase Client
 // ============================================
 
@@ -147,7 +229,9 @@ function getSupabase(): ReturnType<typeof createClient> | null {
     supabaseInstance = createClient(config.supabaseUrl, config.supabaseServiceKey);
     return supabaseInstance;
   } catch (err) {
-    console.error("[AutoScaler] Failed to create Supabase client:", err);
+    structuredLog("error", "auto-scaler", "Failed to create Supabase client", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
 }
@@ -268,34 +352,33 @@ async function getSystemState(): Promise<SystemState> {
           )
         );
 
+        let orgPlanMap = new Map<string, string>();
+
         if (orgIds.length > 0) {
           const { data: orgs } = await supabase
             .from("organizations")
             .select("id, plan")
             .in("id", orgIds);
 
-          const orgPlanMap = new Map(
+          orgPlanMap = new Map(
             ((orgs as OrgRow[]) || []).map((o) => [o.id, o.plan || "free"])
           );
+        }
 
-          for (const job of typedQueuedJobs) {
-            const propertyId = sceneToProperty.get(job.scene_id);
-            const orgId = propertyId ? propertyToOrg.get(propertyId) : null;
-            const plan = orgId ? orgPlanMap.get(orgId) || "free" : "free";
+        for (const job of typedQueuedJobs) {
+          const propertyId = sceneToProperty.get(job.scene_id);
+          const orgId = propertyId ? propertyToOrg.get(propertyId) : null;
+          const plan = orgId ? orgPlanMap.get(orgId) || "free" : "free";
 
-            if (plan === "business") {
-              businessJobsInQueue++;
-              paidJobsInQueue++;
-            } else if (plan === "pro") {
-              proJobsInQueue++;
-              paidJobsInQueue++;
-            } else {
-              freeTierJobsInQueue++;
-            }
+          if (plan === "business") {
+            businessJobsInQueue++;
+            paidJobsInQueue++;
+          } else if (plan === "pro") {
+            proJobsInQueue++;
+            paidJobsInQueue++;
+          } else {
+            freeTierJobsInQueue++;
           }
-        } else {
-          // No org info — treat all as free
-          freeTierJobsInQueue = typedQueuedJobs.length;
         }
       } else {
         // No scene info — treat all as free
@@ -316,7 +399,9 @@ async function getSystemState(): Promise<SystemState> {
       paidJobsInQueue,
     };
   } catch (err) {
-    console.error("[AutoScaler] Error getting system state:", err);
+    structuredLog("error", "auto-scaler", "Error getting system state", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return emptyState;
   }
 }
@@ -331,11 +416,8 @@ async function logToSystem(
   message: string,
   metadata: Record<string, unknown> = {}
 ): Promise<void> {
-  // Always log to console
-  const timestamp = new Date().toISOString();
-  const levelTag = level.toUpperCase().padEnd(5);
-
-  console.log(`[${timestamp}] [${levelTag}] [${source}] ${message}`);
+  // Always emit structured JSON log to console
+  structuredLog(level, source, message, metadata);
 
   // Also log to Supabase system_logs table if available
   const supabase = getSupabase();
@@ -350,7 +432,10 @@ async function logToSystem(
     });
   } catch (err) {
     // Don't recursively error — just log to console
-    console.error("[AutoScaler] Failed to write system_log:", err);
+    structuredLog("error", "auto-scaler", "Failed to write system_log entry", {
+      error: err instanceof Error ? err.message : String(err),
+      originalMessage: message,
+    });
   }
 }
 
@@ -388,10 +473,18 @@ async function scaleUp(
 
   // SIMULATED: In production, this would call a cloud API
   // e.g., AWS ECS task count, GKE node pool resize, Azure Container Instances, etc.
-  console.log(
-    `[AutoScaler] SCALE UP: ${state.activeWorkers} -> ${actualTarget} workers ` +
-    `(+${workersToAdd} new instances) | Queue: ${state.queueDepth}, Idle: ${state.idleWorkers}`
-  );
+  structuredLog("info", "auto-scaler", "SCALE UP decision", {
+    action: "scale_up",
+    currentWorkers: state.activeWorkers,
+    targetWorkers: actualTarget,
+    workersToAdd,
+    queueDepth: state.queueDepth,
+    idleWorkers: state.idleWorkers,
+    paidJobsInQueue: state.paidJobsInQueue,
+    freeTierJobsInQueue: state.freeTierJobsInQueue,
+    avgProcessingTimeSeconds: state.avgProcessingTimeSeconds,
+    simulated: true,
+  });
 
   await logToSystem("info", "auto-scaler", "SCALE UP decision", {
     action: "scale_up",
@@ -454,10 +547,16 @@ async function scaleDown(
   // 2. Wait for current jobs to finish
   // 3. Terminate instances
   // Here we simulate by marking idle workers as 'draining' in the database
-  console.log(
-    `[AutoScaler] SCALE DOWN: ${state.activeWorkers} -> ${actualTarget} workers ` +
-    `(-${workersToRemove} instances) | Queue: ${state.queueDepth}, Idle: ${state.idleWorkers}`
-  );
+  structuredLog("info", "auto-scaler", "SCALE DOWN decision", {
+    action: "scale_down",
+    currentWorkers: state.activeWorkers,
+    targetWorkers: actualTarget,
+    workersToRemove,
+    queueDepth: state.queueDepth,
+    idleWorkers: state.idleWorkers,
+    drainingWorkers: state.drainingWorkers,
+    simulated: true,
+  });
 
   // Attempt to mark idle workers as draining in the database
   const supabase = getSupabase();
@@ -477,12 +576,14 @@ async function scaleDown(
           .update({ status: "draining" })
           .in("id", workerIds);
 
-        console.log(
-          `[AutoScaler] Marked ${workerIds.length} idle workers as 'draining'`
-        );
+        structuredLog("info", "auto-scaler", "Marked idle workers as draining", {
+          count: workerIds.length,
+        });
       }
     } catch (err) {
-      console.error("[AutoScaler] Error marking workers as draining:", err);
+      structuredLog("error", "auto-scaler", "Error marking workers as draining", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -504,29 +605,139 @@ async function scaleDown(
   };
 }
 
+// ============================================
+// Priority Queue — uses metadata.priority_order
+// ============================================
+
 /**
- * Prioritize paid users in the queue.
+ * High priority_order value used to push free-tier delayed jobs to the
+ * back of the queue. Consumers should order ASC by priority_order,
+ * so larger values are processed last.
+ */
+const FREE_TIER_DELAY_PRIORITY_OFFSET = 100_000;
+
+/**
+ * Resolve job → scene → property → org → plan for a set of queued jobs.
+ * Returns a Map<jobId, tier> and the fetched org plan map.
+ */
+async function resolveJobTiers(
+  typedQueuedJobs: ProcessingJobRow[]
+): Promise<{
+  jobTierMap: Map<string, string>;
+  freeOrgIds: Set<string>;
+}> {
+  const supabase = getSupabase();
+  if (!supabase) {
+    // Treat all as free tier
+    return {
+      jobTierMap: new Map(typedQueuedJobs.map((j) => [j.id, "free"])),
+      freeOrgIds: new Set(),
+    };
+  }
+
+  const jobTierMap = new Map<string, string>();
+  const freeOrgIds = new Set<string>();
+
+  // Default: all jobs are free tier
+  for (const job of typedQueuedJobs) {
+    jobTierMap.set(job.id, "free");
+  }
+
+  // Resolve scene → property → org → plan
+  const sceneIds = typedQueuedJobs.map((j) => j.scene_id);
+
+  const { data: scenes } = await supabase
+    .from("scenes")
+    .select("id, property_id")
+    .in("id", sceneIds);
+
+  if (!scenes || scenes.length === 0) {
+    return { jobTierMap, freeOrgIds };
+  }
+
+  const typedScenes = scenes as SceneRow[];
+  const sceneToProperty = new Map(
+    typedScenes.map((s) => [s.id, s.property_id])
+  );
+
+  const propertyIds = Array.from(new Set(typedScenes.map((s) => s.property_id)));
+
+  const { data: properties } = await supabase
+    .from("properties")
+    .select("id, org_id")
+    .in("id", propertyIds);
+
+  const typedProperties = (properties as PropertyRow[]) || [];
+  const propertyToOrg = new Map(
+    typedProperties.map((p) => [p.id, p.org_id as string])
+  );
+
+  const orgIds = Array.from(
+    new Set(
+      typedProperties
+        .map((p) => p.org_id)
+        .filter(Boolean) as string[]
+    )
+  );
+
+  let orgPlanMap = new Map<string, string>();
+
+  if (orgIds.length > 0) {
+    const { data: orgs } = await supabase
+      .from("organizations")
+      .select("id, plan")
+      .in("id", orgIds);
+
+    const allOrgs = ((orgs as OrgRow[]) || []).map((o) => ({
+      id: o.id,
+      plan: o.plan || "free",
+    }));
+
+    orgPlanMap = new Map(allOrgs.map((o) => [o.id, o.plan]));
+
+    for (const org of allOrgs) {
+      if (org.plan === "free") {
+        freeOrgIds.add(org.id);
+      }
+    }
+  }
+
+  // Assign tiers
+  for (const job of typedQueuedJobs) {
+    const propertyId = sceneToProperty.get(job.scene_id);
+    const orgId = propertyId ? propertyToOrg.get(propertyId) : null;
+    const plan = orgId ? orgPlanMap.get(orgId) || "free" : "free";
+    jobTierMap.set(job.id, plan);
+  }
+
+  return { jobTierMap, freeOrgIds };
+}
+
+/**
+ * Prioritize paid users in the queue using metadata.priority_order.
  *
  * Reorders queued jobs so that business tier jobs are processed first,
  * then pro tier jobs, then free tier jobs.
  *
- * This is done by updating created_at timestamps to control FIFO order.
+ * Uses metadata.priority_order for ordering. The created_at column is
+ * NEVER mutated — the original creation timestamp is preserved as the
+ * audit trail. original_created_at is also stored in metadata for
+ * redundancy (in case a prior version of this service mutated created_at).
  *
  * @returns Number of jobs that were reordered
  */
-async function prioritizePaidUsers(config: ScalerConfig): Promise<number> {
+async function prioritizePaidUsers(
+  state: SystemState,
+  config: ScalerConfig
+): Promise<number> {
   const supabase = getSupabase();
   if (!supabase) return 0;
 
   try {
-    // Only reorder when queue is under pressure
-    const state = await getSystemState();
-    if (state.queueDepth <= config.freeTierDelayThreshold) return 0;
-
     // Get all queued jobs ordered by creation time
     const { data: queuedJobs, error } = await supabase
       .from("processing_jobs")
-      .select("id, scene_id, created_at")
+      .select("id, scene_id, created_at, metadata")
       .eq("status", "queued")
       .order("created_at", { ascending: true })
       .limit(500);
@@ -534,84 +745,50 @@ async function prioritizePaidUsers(config: ScalerConfig): Promise<number> {
     if (error || !queuedJobs || queuedJobs.length === 0) return 0;
     const typedQueuedJobs = queuedJobs as ProcessingJobRow[];
 
-    // Resolve job → scene → property → org → plan
-    const sceneIds = typedQueuedJobs.map((j) => j.scene_id);
-
-    const { data: scenes } = await supabase
-      .from("scenes")
-      .select("id, property_id")
-      .in("id", sceneIds);
-
-    if (!scenes || scenes.length === 0) return 0;
-    const typedScenes = scenes as SceneRow[];
-
-    const sceneToProperty = new Map(
-      typedScenes.map((s) => [s.id, s.property_id])
-    );
-
-    const propertyIds = Array.from(new Set(typedScenes.map((s) => s.property_id)));
-
-    const { data: properties } = await supabase
-      .from("properties")
-      .select("id, org_id")
-      .in("id", propertyIds);
-
-    const typedProperties = (properties as PropertyRow[]) || [];
-    const propertyToOrg = new Map(
-      typedProperties.map((p) => [p.id, p.org_id as string])
-    );
-
-    const orgIds = Array.from(
-      new Set(
-        typedProperties
-          .map((p) => p.org_id)
-          .filter(Boolean) as string[]
-      )
-    );
-
-    if (orgIds.length === 0) return 0;
-
-    const { data: orgs } = await supabase
-      .from("organizations")
-      .select("id, plan")
-      .in("id", orgIds);
-
-    const orgPlanMap = new Map(
-      ((orgs as OrgRow[]) || []).map((o) => [o.id, o.plan || "free"])
-    );
+    // Resolve tiers for all jobs
+    const { jobTierMap } = await resolveJobTiers(typedQueuedJobs);
 
     // Categorize jobs by tier
-    type TieredJob = { id: string; created_at: string; tier: "business" | "pro" | "free" };
+    type TieredJob = {
+      id: string;
+      created_at: string;
+      metadata: Record<string, unknown> | null;
+      tier: string;
+    };
     const businessJobs: TieredJob[] = [];
     const proJobs: TieredJob[] = [];
     const freeJobs: TieredJob[] = [];
 
     for (const job of typedQueuedJobs) {
-      const propertyId = sceneToProperty.get(job.scene_id);
-      const orgId = propertyId ? propertyToOrg.get(propertyId) : null;
-      const plan = orgId ? orgPlanMap.get(orgId) || "free" : "free";
+      const tier = jobTierMap.get(job.id) || "free";
 
       const tieredJob: TieredJob = {
         id: job.id,
         created_at: job.created_at,
-        tier: plan as "business" | "pro" | "free",
+        metadata: job.metadata,
+        tier,
       };
 
-      if (plan === "business") {
+      if (tier === "business") {
         businessJobs.push(tieredJob);
-      } else if (plan === "pro") {
+      } else if (tier === "pro") {
         proJobs.push(tieredJob);
       } else {
         freeJobs.push(tieredJob);
       }
     }
 
-    // Check if reordering is needed (any paid job is behind a free job)
     // Build the desired order: business → pro → free (preserving FIFO within each tier)
     const desiredOrder: TieredJob[] = [
-      ...businessJobs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
-      ...proJobs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
-      ...freeJobs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+      ...businessJobs.sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      ),
+      ...proJobs.sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      ),
+      ...freeJobs.sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      ),
     ];
 
     // Check if current order matches desired order
@@ -621,17 +798,30 @@ async function prioritizePaidUsers(config: ScalerConfig): Promise<number> {
 
     if (!needsReorder) return 0;
 
-    // Re-assign created_at timestamps to enforce priority order
-    const earliestTime = new Date(typedQueuedJobs[0].created_at).getTime();
+    // Assign priority_order values (lower = higher priority)
     let reorderedCount = 0;
 
     for (let i = 0; i < desiredOrder.length; i++) {
       const job = desiredOrder[i];
-      const newCreatedAt = new Date(earliestTime + i * 1000).toISOString(); // 1 second apart
+      const existingMeta = (job.metadata as Record<string, unknown>) || {};
+
+      // Skip if this job was already assigned this exact priority_order
+      if (existingMeta.priority_order === i && existingMeta.original_created_at) {
+        reorderedCount++;
+        continue;
+      }
 
       const { error: updateError } = await supabase
         .from("processing_jobs")
-        .update({ created_at: newCreatedAt })
+        .update({
+          metadata: {
+            ...existingMeta,
+            priority_order: i,
+            original_created_at:
+              existingMeta.original_created_at || job.created_at,
+            tier: job.tier,
+          },
+        })
         .eq("id", job.id);
 
       if (!updateError) {
@@ -640,10 +830,13 @@ async function prioritizePaidUsers(config: ScalerConfig): Promise<number> {
     }
 
     if (reorderedCount > 0) {
-      console.log(
-        `[AutoScaler] Reordered ${reorderedCount} jobs: ` +
-        `${businessJobs.length} business → ${proJobs.length} pro → ${freeJobs.length} free`
-      );
+      structuredLog("info", "auto-scaler", "Queue prioritization applied", {
+        reorderedCount,
+        businessJobs: businessJobs.length,
+        proJobs: proJobs.length,
+        freeJobs: freeJobs.length,
+        queueDepth: state.queueDepth,
+      });
 
       await logToSystem("info", "auto-scaler", "Queue prioritization applied", {
         reorderedCount,
@@ -656,7 +849,9 @@ async function prioritizePaidUsers(config: ScalerConfig): Promise<number> {
 
     return reorderedCount;
   } catch (err) {
-    console.error("[AutoScaler] Error prioritizing paid users:", err);
+    structuredLog("error", "auto-scaler", "Error prioritizing paid users", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return 0;
   }
 }
@@ -665,88 +860,49 @@ async function prioritizePaidUsers(config: ScalerConfig): Promise<number> {
  * Delay free-tier jobs when the queue is overloaded.
  *
  * When queue depth exceeds the free tier delay threshold, this function
- * adds a delay marker to free-tier jobs by updating their metadata.
- * The delay causes free-tier jobs to be deprioritized in processing.
+ * pushes free-tier jobs to the back of the queue by setting a high
+ * metadata.priority_order value. Uses a single batched update for
+ * all free-tier jobs.
+ *
+ * Jobs without an org association are treated as free tier and delayed.
  *
  * @returns Number of free-tier jobs that were delayed
  */
-async function delayFreeTierJobs(config: ScalerConfig): Promise<number> {
+async function delayFreeTierJobs(
+  state: SystemState,
+  config: ScalerConfig
+): Promise<number> {
   const supabase = getSupabase();
   if (!supabase) return 0;
 
   try {
-    const state = await getSystemState();
-
     // Only delay when queue exceeds the threshold
     if (state.queueDepth <= config.freeTierDelayThreshold) {
       return 0;
     }
 
-    // Get free-tier queued jobs
+    // Get free-tier queued jobs (fetch metadata + created_at for preservation)
     const { data: queuedJobs } = await supabase
       .from("processing_jobs")
-      .select("id, scene_id, metadata")
+      .select("id, scene_id, created_at, metadata")
       .eq("status", "queued")
       .limit(500);
 
     if (!queuedJobs || queuedJobs.length === 0) return 0;
     const typedQueuedJobs = queuedJobs as ProcessingJobRow[];
 
-    // Resolve org plans
-    const sceneIds = typedQueuedJobs.map((j) => j.scene_id);
-
-    const { data: scenes } = await supabase
-      .from("scenes")
-      .select("id, property_id")
-      .in("id", sceneIds);
-
-    if (!scenes || scenes.length === 0) return 0;
-    const typedScenes = scenes as SceneRow[];
-
-    const sceneToProperty = new Map(
-      typedScenes.map((s) => [s.id, s.property_id])
-    );
-
-    const propertyIds = Array.from(new Set(typedScenes.map((s) => s.property_id)));
-
-    const { data: properties } = await supabase
-      .from("properties")
-      .select("id, org_id")
-      .in("id", propertyIds);
-
-    const typedProperties = (properties as PropertyRow[]) || [];
-    const propertyToOrg = new Map(
-      typedProperties.map((p) => [p.id, p.org_id as string])
-    );
-
-    const orgIds = Array.from(
-      new Set(
-        typedProperties
-          .map((p) => p.org_id)
-          .filter(Boolean) as string[]
-      )
-    );
-
-    if (orgIds.length === 0) return 0;
-
-    const { data: orgs } = await supabase
-      .from("organizations")
-      .select("id, plan")
-      .in("id", orgIds);
-
-    const freeOrgIds = new Set(
-      ((orgs as OrgRow[]) || []).filter((o) => o.plan === "free").map((o) => o.id)
-    );
+    // Resolve tiers
+    const { jobTierMap, freeOrgIds } = await resolveJobTiers(typedQueuedJobs);
 
     // Identify free-tier jobs that haven't been delayed yet
+    // Jobs without an org association (orgId is null/undefined) are also free tier
     const freeJobIds: string[] = [];
     for (const job of typedQueuedJobs) {
-      const propertyId = sceneToProperty.get(job.scene_id);
-      const orgId = propertyId ? propertyToOrg.get(propertyId) : null;
+      const tier = jobTierMap.get(job.id) || "free";
 
-      if (orgId && freeOrgIds.has(orgId)) {
-        // Check if already delayed
-        const metadata = job.metadata || {};
+      if (tier === "free") {
+        // Check if already delayed (avoid re-delaying)
+        const metadata = (job.metadata as Record<string, unknown>) || {};
         if (!metadata.delayed) {
           freeJobIds.push(job.id);
         }
@@ -755,36 +911,42 @@ async function delayFreeTierJobs(config: ScalerConfig): Promise<number> {
 
     if (freeJobIds.length === 0) return 0;
 
-    // Mark free-tier jobs as delayed with a delay timestamp
+    // Calculate delay duration
     const delayDurationMs = Math.min(
       (state.queueDepth - config.freeTierDelayThreshold) * 5000, // 5s extra per job over threshold
       120000 // Max 2 minutes additional delay
     );
 
-    let delayedCount = 0;
-    for (const jobId of freeJobIds) {
-      const { error: updateError } = await supabase
-        .from("processing_jobs")
-        .update({
-          metadata: {
-            delayed: true,
-            delay_until: new Date(Date.now() + delayDurationMs).toISOString(),
-            delay_reason: `Queue overloaded (${state.queueDepth} jobs, threshold: ${config.freeTierDelayThreshold})`,
-            delay_duration_ms: delayDurationMs,
-          },
-        })
-        .eq("id", jobId);
+    // Compute a single high priority_order for all free-tier delayed jobs
+    // This pushes them to the back of the queue. Among free-tier delayed
+    // jobs, relative ordering is determined by created_at (fallback).
+    const delayedPriorityOrder = state.queueDepth + FREE_TIER_DELAY_PRIORITY_OFFSET;
 
-      if (!updateError) {
-        delayedCount++;
-      }
-    }
+    // Batch update: all free-tier delayed jobs get the same metadata
+    const { error: updateError } = await supabase
+      .from("processing_jobs")
+      .update({
+        metadata: {
+          priority_order: delayedPriorityOrder,
+          delayed: true,
+          delay_until: new Date(Date.now() + delayDurationMs).toISOString(),
+          delay_reason: `Queue overloaded (${state.queueDepth} jobs, threshold: ${config.freeTierDelayThreshold})`,
+          delay_duration_ms: delayDurationMs,
+        },
+      })
+      .in("id", freeJobIds);
+
+    const delayedCount = updateError ? 0 : freeJobIds.length;
 
     if (delayedCount > 0) {
-      console.log(
-        `[AutoScaler] Delayed ${delayedCount} free-tier jobs ` +
-        `(+${delayDurationMs / 1000}s delay) | Queue: ${state.queueDepth}, Threshold: ${config.freeTierDelayThreshold}`
-      );
+      structuredLog("info", "auto-scaler", "Free-tier jobs delayed", {
+        delayedCount,
+        delayDurationMs,
+        queueDepth: state.queueDepth,
+        threshold: config.freeTierDelayThreshold,
+        freeTierJobsInQueue: state.freeTierJobsInQueue,
+        paidJobsInQueue: state.paidJobsInQueue,
+      });
 
       await logToSystem("info", "auto-scaler", "Free-tier jobs delayed", {
         delayedCount,
@@ -798,7 +960,9 @@ async function delayFreeTierJobs(config: ScalerConfig): Promise<number> {
 
     return delayedCount;
   } catch (err) {
-    console.error("[AutoScaler] Error delaying free-tier jobs:", err);
+    structuredLog("error", "auto-scaler", "Error delaying free-tier jobs", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return 0;
   }
 }
@@ -814,14 +978,37 @@ let lastDecision: ScalingDecision | null = null;
 const recentErrors: string[] = [];
 const MAX_ERRORS = 20;
 
-function healthCheck(): HealthStatus {
+/**
+ * Perform a health check that actually verifies database connectivity
+ * by executing a real query (SELECT count on processing_jobs).
+ */
+async function healthCheck(): Promise<HealthStatus> {
   const uptime = Date.now() - startTime;
   const errors = [...recentErrors];
 
   let supabaseConnected = false;
   const supabase = getSupabase();
   if (supabase) {
-    supabaseConnected = true;
+    try {
+      // Execute a real query to verify connectivity
+      const { error } = await supabase
+        .from("processing_jobs")
+        .select("id", { count: "exact", head: true })
+        .limit(1);
+
+      supabaseConnected = !error;
+
+      if (error) {
+        structuredLog("warn", "auto-scaler", "Health check database query failed", {
+          error: error.message,
+        });
+      }
+    } catch (err) {
+      supabaseConnected = false;
+      structuredLog("warn", "auto-scaler", "Health check database connectivity error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   let status: "healthy" | "degraded" | "unhealthy";
@@ -878,14 +1065,18 @@ async function evaluateAndScale(config: ScalerConfig): Promise<ScalingDecision> 
     // Check cooldown
     const nowMs = Date.now();
     const elapsedSinceLastDecision = (nowMs - lastDecisionTime) / 1000;
-    const cooldownActive = lastDecisionTime > 0 && elapsedSinceLastDecision < config.cooldownSeconds;
+    const cooldownActive =
+      lastDecisionTime > 0 && elapsedSinceLastDecision < config.cooldownSeconds;
 
     let action: ScalingDecision["action"] = "hold";
     let targetWorkers = state.activeWorkers;
     let reason = "System is within normal parameters";
 
     // 3. SCALE UP: queue > scaleUpThreshold AND workers < maxWorkers
-    if (state.queueDepth > config.scaleUpThreshold && state.activeWorkers < config.maxWorkers) {
+    if (
+      state.queueDepth > config.scaleUpThreshold &&
+      state.activeWorkers < config.maxWorkers
+    ) {
       if (!cooldownActive) {
         // Calculate how many workers we need (1 worker per ~5 queued jobs)
         const deficit = Math.ceil(state.queueDepth / 5);
@@ -957,13 +1148,16 @@ async function evaluateAndScale(config: ScalerConfig): Promise<ScalingDecision> 
       lastDecisionTime = Date.now();
     }
 
-    // 6. If queue > freeTierDelayThreshold: delay free-tier jobs
-    if (state.queueDepth > config.freeTierDelayThreshold) {
-      await delayFreeTierJobs(config);
-    }
+    // 6. Prioritize paid user jobs in queue (sets metadata.priority_order for all jobs)
+    //    Always run so that previously-delayed jobs get restored to normal priority
+    //    when the system is no longer overloaded.
+    await prioritizePaidUsers(state, config);
 
-    // 7. Prioritize paid user jobs in queue
-    await prioritizePaidUsers(config);
+    // 7. If queue > freeTierDelayThreshold: delay free-tier jobs
+    //    Runs AFTER prioritize so it can push free-tier jobs even further back.
+    if (state.queueDepth > config.freeTierDelayThreshold) {
+      await delayFreeTierJobs(state, config);
+    }
 
     // 8. Log decision to system_logs
     const logLevel: "debug" | "info" | "warn" =
@@ -983,18 +1177,23 @@ async function evaluateAndScale(config: ScalerConfig): Promise<ScalingDecision> 
       cooldownActive,
     });
 
-    // Console summary
+    // Console summary (human-readable)
     const actionTag =
-      action === "scale_up" ? "UP  " :
-      action === "scale_down" ? "DOWN" : "HOLD";
+      action === "scale_up"
+        ? "UP  "
+        : action === "scale_down"
+          ? "DOWN"
+          : "HOLD";
 
-    console.log(
-      `[${actionTag}] [${lastEvaluationAt}] ` +
-      `${action.toUpperCase()} | Workers: ${state.activeWorkers}→${targetWorkers} | ` +
-      `Queue: ${state.queueDepth} | Idle: ${state.idleWorkers} | ` +
-      `Paid: ${state.paidJobsInQueue} | Free: ${state.freeTierJobsInQueue} | ` +
-      `Avg Time: ${Math.round(state.avgProcessingTimeSeconds)}s`
-    );
+    structuredLog("info", "auto-scaler", "Evaluation cycle complete", {
+      action,
+      workers: `${state.activeWorkers}→${targetWorkers}`,
+      queue: state.queueDepth,
+      idle: state.idleWorkers,
+      paid: state.paidJobsInQueue,
+      free: state.freeTierJobsInQueue,
+      avgTimeSeconds: Math.round(state.avgProcessingTimeSeconds),
+    });
 
     return decision;
   } catch (err) {
@@ -1004,7 +1203,9 @@ async function evaluateAndScale(config: ScalerConfig): Promise<ScalingDecision> 
       recentErrors.shift();
     }
 
-    console.error("[AutoScaler] Evaluation error:", err);
+    structuredLog("error", "auto-scaler", "Evaluation error", {
+      error: errorMsg,
+    });
 
     await logToSystem("error", "auto-scaler", `Evaluation failed: ${errorMsg}`, {
       error: errorMsg,
@@ -1019,10 +1220,60 @@ async function evaluateAndScale(config: ScalerConfig): Promise<ScalingDecision> 
 // ============================================
 
 let isShuttingDown = false;
-let evaluationTimer: ReturnType<typeof setInterval> | null = null;
+let evaluationTimer: ReturnType<typeof setTimeout> | null = null;
+let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Schedule the next evaluation using setTimeout.
+ * After each evaluation completes, the next one is scheduled.
+ * This prevents overlap when an evaluation takes longer than the interval.
+ */
+function scheduleEvaluation(config: ScalerConfig): void {
+  if (isShuttingDown) return;
+
+  evaluationTimer = setTimeout(async () => {
+    if (isShuttingDown) return;
+
+    try {
+      await evaluateAndScale(config);
+    } catch (err) {
+      structuredLog("error", "auto-scaler", "Evaluation cycle failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Schedule next evaluation after this one completes
+    scheduleEvaluation(config);
+  }, config.evaluationIntervalMs);
+}
 
 async function main() {
-  const config = loadConfig();
+  let config: ScalerConfig;
+  try {
+    config = loadConfig();
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    structuredLog("fatal", "auto-scaler", "Configuration validation failed — service cannot start", {
+      error: errorMsg,
+    });
+    process.exit(1);
+    return; // TypeScript unreachable, but good practice
+  }
+
+  structuredLog("info", "auto-scaler", "Auto-Scaler service starting", {
+    version: "1.0.0",
+    pid: process.pid,
+    config: {
+      scaleUpThreshold: config.scaleUpThreshold,
+      scaleDownThreshold: config.scaleDownThreshold,
+      minWorkers: config.minWorkers,
+      maxWorkers: config.maxWorkers,
+      cooldownSeconds: config.cooldownSeconds,
+      freeTierDelayThreshold: config.freeTierDelayThreshold,
+      evaluationIntervalMs: config.evaluationIntervalMs,
+      supabaseConfigured: !!(config.supabaseUrl && config.supabaseServiceKey),
+    },
+  });
 
   console.log("============================================");
   console.log("  Auto-Scaler Service v1.0.0");
@@ -1042,13 +1293,15 @@ async function main() {
   if (!config.supabaseUrl || !config.supabaseServiceKey) {
     console.warn("");
     console.warn("WARNING: Supabase is not configured.");
-    console.warn("   The auto-scaler will run with reduced capability — database operations will be unavailable.");
+    console.warn(
+      "   The auto-scaler will run with reduced capability — database operations will be unavailable."
+    );
     console.warn("   Set the following environment variables to enable full functionality:");
     console.warn("   - SUPABASE_URL");
     console.warn("   - SUPABASE_SERVICE_KEY");
     console.warn("");
   } else {
-    // Test connection
+    // Test connection — verify the system_logs table is accessible
     const supabase = getSupabase();
     if (supabase) {
       try {
@@ -1058,12 +1311,31 @@ async function main() {
           .limit(1);
 
         if (error) {
-          console.warn(`[WARN] Supabase connection test returned: ${error.message}`);
-          console.warn("   Service will continue but some operations may fail.");
+          structuredLog("warn", "auto-scaler", "Startup validation failed — system_logs table may not exist or service key lacks permission", {
+            error: error.message,
+            code: error.code,
+            hint: "Verify that (1) the 'system_logs' table exists in Supabase, (2) the service key has SELECT/INSERT permissions on it, and (3) Row Level Security policies allow the service role to access it. The auto-scaler will continue but logging to the database will fail.",
+          });
+          console.warn(
+            `[WARN] Startup validation failed: system_logs table returned error: "${error.message}" (code: ${error.code})`
+          );
+          console.warn(
+            "   This usually means the 'system_logs' table does not exist, or the service key lacks permission."
+          );
+          console.warn(
+            "   The auto-scaler will continue running, but database logging will be unavailable."
+          );
         } else {
+          structuredLog("info", "auto-scaler", "Supabase connection verified", {
+            table: "system_logs",
+          });
           console.log("[OK] Supabase connection verified");
         }
       } catch (err) {
+        structuredLog("warn", "auto-scaler", "Startup validation — Supabase connection test threw an exception", {
+          error: err instanceof Error ? err.message : String(err),
+          hint: "Check network connectivity and Supabase URL. The auto-scaler will continue with reduced capability.",
+        });
         console.warn("[WARN] Supabase connection test failed:", err);
       }
     }
@@ -1092,36 +1364,30 @@ async function main() {
   try {
     await evaluateAndScale(config);
   } catch (err) {
-    console.error("[AutoScaler] Initial evaluation failed:", err);
+    structuredLog("error", "auto-scaler", "Initial evaluation failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
-  // Start evaluation loop
+  // Start evaluation loop using self-scheduling setTimeout (prevents drift/overlap)
   console.log(
     `\nRunning evaluation every ${config.evaluationIntervalMs / 1000}s...`
   );
 
-  evaluationTimer = setInterval(async () => {
-    if (isShuttingDown) return;
-
-    try {
-      await evaluateAndScale(config);
-    } catch (err) {
-      console.error("[AutoScaler] Evaluation cycle failed:", err);
-    }
-  }, config.evaluationIntervalMs);
+  scheduleEvaluation(config);
 
   // Periodic health check (every 5 minutes)
-  const healthCheckInterval = setInterval(() => {
+  healthCheckTimer = setInterval(async () => {
     if (isShuttingDown) return;
 
-    const health = healthCheck();
+    const health = await healthCheck();
     if (health.status !== "healthy") {
-      console.warn(
-        `[HEALTH] ${health.status.toUpperCase()} | ` +
-        `Evaluations: ${health.totalEvaluations} | ` +
-        `Supabase: ${health.supabaseConnected ? "connected" : "disconnected"} | ` +
-        `Errors: ${health.errors.length}`
-      );
+      structuredLog("warn", "auto-scaler", "Periodic health check", {
+        status: health.status,
+        evaluations: health.totalEvaluations,
+        supabaseConnected: health.supabaseConnected,
+        errorCount: health.errors.length,
+      });
     }
   }, 5 * 60 * 1000);
 
@@ -1133,11 +1399,16 @@ async function handleShutdown() {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  console.log("\n[SHUTDOWN] Shutdown signal received...");
+  structuredLog("info", "auto-scaler", "Shutdown signal received");
 
   if (evaluationTimer) {
-    clearInterval(evaluationTimer);
+    clearTimeout(evaluationTimer);
     evaluationTimer = null;
+  }
+
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer);
+    healthCheckTimer = null;
   }
 
   await logToSystem("info", "auto-scaler", "Auto-Scaler service shutting down", {
@@ -1146,13 +1417,19 @@ async function handleShutdown() {
     lastDecision,
   });
 
-  console.log("[SHUTDOWN] Auto-Scaler service stopped");
+  structuredLog("info", "auto-scaler", "Auto-Scaler service stopped", {
+    totalEvaluations,
+    uptime: Date.now() - startTime,
+  });
+
   process.exit(0);
 }
 
 // ---- Start ----
 
 main().catch((err) => {
-  console.error("[AutoScaler] Fatal error:", err);
+  structuredLog("fatal", "auto-scaler", "Fatal error on startup", {
+    error: err instanceof Error ? err.message : String(err),
+  });
   process.exit(1);
 });

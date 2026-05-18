@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import {
   generateCaptureFlow,
@@ -86,7 +87,11 @@ export default function CaptureSessionClient({
     queueRef.current = queue;
 
     return () => {
-      // Cleanup: queue is per-mount
+      // Cleanup: abort pending uploads and clear the queue
+      if (queueRef.current) {
+        queueRef.current.dispose();
+        queueRef.current = null;
+      }
     };
   }, [sessionId, property, sessionData]);
 
@@ -172,11 +177,11 @@ export default function CaptureSessionClient({
               This capture session doesn&apos;t exist or you don&apos;t have
               access.
             </p>
-            <a href="/dashboard">
+            <Link href="/dashboard">
               <Button variant="outline" className="mt-4">
                 Back to Dashboard
               </Button>
-            </a>
+            </Link>
           </CardContent>
         </Card>
       </div>
@@ -339,7 +344,7 @@ export default function CaptureSessionClient({
                 <p className="text-sm text-amber-600">
                   {uploadingCount} photo(s) still uploading — please wait before leaving
                 </p>
-                <a
+                <Link
                   href="/dashboard"
                   className="text-sm text-muted-foreground hover:text-foreground"
                   onClick={(e) => {
@@ -353,15 +358,15 @@ export default function CaptureSessionClient({
                   }}
                 >
                   Save & exit to dashboard
-                </a>
+                </Link>
               </div>
             ) : (
-              <a
+              <Link
                 href="/dashboard"
                 className="text-sm text-muted-foreground hover:text-foreground"
               >
                 Save & exit to dashboard
-              </a>
+              </Link>
             )}
           </div>
         </div>

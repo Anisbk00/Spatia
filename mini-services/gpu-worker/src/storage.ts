@@ -1,15 +1,85 @@
 // ============================================
 // Supabase Storage operations for scene output
 // Enhanced with auto-thumbnail generation.
+//
+// Audit fixes applied:
+//   - Bucket initialization at startup via ensureBucket()
+//   - Retry logic for uploads (up to 3 retries with backoff)
+//   - Error checking on listBuckets and createBucket
 // ============================================
 
 import { getSupabase } from "./db";
 
 const SCENES_BUCKET = "scene-outputs";
+const UPLOAD_MAX_RETRIES = 3;
+const UPLOAD_RETRY_DELAY_MS = 1000;
+
+let bucketInitialized = false;
 
 /**
- * Upload a file to Supabase Storage.
- * Creates the bucket if it doesn't exist.
+ * Ensure the storage bucket exists. Creates it if missing.
+ * Call once at startup; safe to call multiple times.
+ * Returns true if bucket is ready, false if unavailable.
+ */
+export async function ensureBucket(): Promise<boolean> {
+  if (bucketInitialized) return true;
+
+  const supabase = getSupabase();
+  if (!supabase) {
+    console.error("[STORAGE] Cannot initialize bucket: Supabase not configured");
+    return false;
+  }
+
+  try {
+    const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+
+    if (listError) {
+      console.error("[STORAGE] Failed to list buckets:", listError.message);
+      return false;
+    }
+
+    const bucketExists = buckets?.some((b) => b.id === SCENES_BUCKET);
+
+    if (!bucketExists) {
+      console.log(`[STORAGE] Bucket "${SCENES_BUCKET}" not found, creating...`);
+      const { error: createError } = await supabase.storage.createBucket(SCENES_BUCKET, {
+        public: true,
+        fileSizeLimit: 500 * 1024 * 1024, // 500MB
+      });
+
+      if (createError) {
+        // Bucket might already exist due to race — check again
+        if (createError.message.includes("already exists")) {
+          console.log(`[STORAGE] Bucket "${SCENES_BUCKET}" already exists (race), continuing`);
+        } else {
+          console.error(`[STORAGE] Failed to create bucket "${SCENES_BUCKET}":`, createError.message);
+          return false;
+        }
+      } else {
+        console.log(`[STORAGE] Bucket "${SCENES_BUCKET}" created successfully`);
+      }
+    } else {
+      console.log(`[STORAGE] Bucket "${SCENES_BUCKET}" verified`);
+    }
+
+    bucketInitialized = true;
+    return true;
+  } catch (err) {
+    console.error("[STORAGE] Unexpected error during bucket initialization:", err);
+    return false;
+  }
+}
+
+/**
+ * Sleep helper for retry backoff.
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Upload a file to Supabase Storage with retry logic.
+ * Ensures bucket exists before uploading.
  * Returns an empty string if Supabase is not configured.
  */
 export async function uploadToStorage(
@@ -19,38 +89,55 @@ export async function uploadToStorage(
 ): Promise<string> {
   const supabase = getSupabase();
   if (!supabase) {
-    console.error(`Cannot upload ${path}: Supabase is not configured`);
+    console.error(`[STORAGE] Cannot upload ${path}: Supabase is not configured`);
     return "";
   }
 
-  // Ensure bucket exists
-  const { data: buckets } = await supabase.storage.listBuckets();
-  const bucketExists = buckets?.some((b) => b.id === SCENES_BUCKET);
-
-  if (!bucketExists) {
-    await supabase.storage.createBucket(SCENES_BUCKET, {
-      public: true,
-      fileSizeLimit: 500 * 1024 * 1024, // 500MB
-    });
+  // Ensure bucket exists (idempotent, one-time init)
+  const bucketReady = await ensureBucket();
+  if (!bucketReady) {
+    console.error(`[STORAGE] Cannot upload ${path}: bucket not available`);
+    return "";
   }
 
-  const { error } = await supabase.storage
-    .from(SCENES_BUCKET)
-    .upload(path, data, {
-      contentType,
-      upsert: true,
-    });
+  // Retry loop
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= UPLOAD_MAX_RETRIES; attempt++) {
+    try {
+      const { error } = await supabase.storage
+        .from(SCENES_BUCKET)
+        .upload(path, data, {
+          contentType,
+          upsert: true,
+        });
 
-  if (error) {
-    console.error(`Storage upload error (${path}):`, error);
-    throw new Error(`Failed to upload ${path}: ${error.message}`);
+      if (error) {
+        lastError = new Error(error.message);
+        console.error(`[STORAGE] Upload attempt ${attempt}/${UPLOAD_MAX_RETRIES} failed for ${path}:`, error.message);
+        if (attempt < UPLOAD_MAX_RETRIES) {
+          await sleep(UPLOAD_RETRY_DELAY_MS * attempt); // Linear backoff
+        }
+        continue;
+      }
+
+      // Success — get public URL
+      const { data: urlData } = supabase.storage
+        .from(SCENES_BUCKET)
+        .getPublicUrl(path);
+
+      return urlData.publicUrl;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.error(`[STORAGE] Upload attempt ${attempt}/${UPLOAD_MAX_RETRIES} threw for ${path}:`, err);
+      if (attempt < UPLOAD_MAX_RETRIES) {
+        await sleep(UPLOAD_RETRY_DELAY_MS * attempt);
+      }
+    }
   }
 
-  const { data: urlData } = supabase.storage
-    .from(SCENES_BUCKET)
-    .getPublicUrl(path);
-
-  return urlData.publicUrl;
+  // All retries exhausted
+  console.error(`[STORAGE] All ${UPLOAD_MAX_RETRIES} upload attempts failed for ${path}`);
+  throw lastError || new Error(`Failed to upload ${path} after ${UPLOAD_MAX_RETRIES} retries`);
 }
 
 /**

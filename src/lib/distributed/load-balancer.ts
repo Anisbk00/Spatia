@@ -43,12 +43,7 @@ export class LoadBalancer {
     let bestScore = -1;
 
     for (const worker of available) {
-      const score = this.calculateWorkerScore(worker);
-
-      // Apply region match bonus
-      if (requirements?.region && worker.region === requirements.region) {
-        // Already factored into calculateWorkerScore, but ensure weight
-      }
+      const score = this.calculateWorkerScore(worker, requirements?.region);
 
       // Apply GPU type filter — skip workers that don't match required GPU
       if (requirements?.gpuType && worker.gpu_type !== requirements.gpuType) {
@@ -69,9 +64,12 @@ export class LoadBalancer {
    * - Available capacity (40%): how many more jobs it can take
    * - Reliability (30%): low failure rate
    * - Speed (20%): low average job duration
-   * - Region match (10%): already in the preferred region
+   * - Region match (10%): worker is in the preferred region for the job
+   *
+   * @param worker - The worker to score
+   * @param preferredRegion - The job's preferred region, if available
    */
-  calculateWorkerScore(worker: Worker): number {
+  calculateWorkerScore(worker: Worker, preferredRegion?: string): number {
     // ---- Capacity Score (0-100) ----
     const remainingCapacity =
       worker.max_concurrent_jobs - worker.current_job_count;
@@ -105,9 +103,17 @@ export class LoadBalancer {
     }
 
     // ---- Region Score (0-100) ----
-    // Give a baseline score; region matching is handled
-    // in selectBestWorker when requirements are provided.
-    const regionScore = 50;
+    // If a preferred region is provided and matches the worker's region,
+    // give a full score (100). If the regions don't match, give a lower
+    // score (25) to still prefer closer workers but not disqualify distant ones.
+    // When no preferred region is specified, return a neutral score (50).
+    let regionScore: number;
+    if (preferredRegion) {
+      regionScore = worker.region === preferredRegion ? 100 : 25;
+    } else {
+      // No region preference available — return a neutral default
+      regionScore = 50;
+    }
 
     // ---- Weighted total ----
     const totalScore =

@@ -121,7 +121,17 @@ class WorkerConfig:
         return bool(self.supabase_url and self.supabase_service_key)
 
     def validate(self) -> list[str]:
-        """Validate configuration and return list of warnings."""
+        """Validate configuration and return list of warnings.
+
+        Raises RuntimeError if configuration is fundamentally invalid
+        (e.g. Supabase not configured and simulation mode not enabled).
+        """
+        if not self.supabase_configured and not self.simulation_mode:
+            raise RuntimeError(
+                "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set, "
+                "or SIMULATION_MODE=true must be enabled for the worker to run"
+            )
+
         warnings: list[str] = []
         if not self.supabase_configured:
             warnings.append(

@@ -2,6 +2,49 @@
 LingBot-Map Worker — Database Client
 ======================================
 Supabase database operations for job polling, claiming, and status updates.
+
+Required Postgres RPC Functions
+--------------------------------
+The following functions should be created on the Supabase database to ensure
+atomic operations (avoiding read-modify-write race conditions):
+
+1. fail_job_atomic — Atomically increments retry_count and sets status:
+
+    CREATE OR REPLACE FUNCTION fail_job_atomic(
+        p_job_id UUID,
+        p_max_retries INTEGER,
+        p_error_message TEXT
+    )
+    RETURNS VOID AS $$
+    BEGIN
+        UPDATE processing_jobs
+        SET retry_count = retry_count + 1,
+            status = CASE
+                WHEN retry_count + 1 >= p_max_retries THEN 'failed'
+                ELSE 'queued'
+            END,
+            finished_at = NOW(),
+            logs = LEFT(p_error_message, 5000)
+        WHERE id = p_job_id;
+    END;
+    $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+2. append_job_log — Atomically appends to the logs column:
+
+    CREATE OR REPLACE FUNCTION append_job_log(
+        p_job_id UUID,
+        p_log_line TEXT
+    )
+    RETURNS VOID AS $$
+    BEGIN
+        UPDATE processing_jobs
+        SET logs = CASE
+            WHEN length(COALESCE(logs, '')) > 4500 THEN logs
+            ELSE COALESCE(logs, '') || chr(10) || p_log_line
+        END
+        WHERE id = p_job_id;
+    END;
+    $$ LANGUAGE plpgsql SECURITY DEFINER;
 """
 
 from __future__ import annotations
@@ -92,28 +135,39 @@ def get_next_queued_job() -> Optional[ProcessingJob]:
         return None
 
 
-def claim_job(job_id: str) -> bool:
+def claim_job(job_id: str, worker_id: str = "") -> bool:
     """Atomically claim a job by setting status to 'running'.
 
     Uses conditional UPDATE to avoid race conditions:
     only claims if the job is still 'queued'.
+
+    Args:
+        job_id: The job to claim.
+        worker_id: Identifier of the worker claiming the job.
+
+    Returns:
+        True if the job was successfully claimed, False otherwise.
     """
     try:
         client = get_client()
 
+        update_data: dict[str, Any] = {
+            "status": JobStatus.RUNNING.value,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if worker_id:
+            update_data["claimed_by"] = worker_id
+
         response = (
             client.table("processing_jobs")
-            .update({
-                "status": JobStatus.RUNNING.value,
-                "started_at": datetime.now(timezone.utc).isoformat(),
-            })
+            .update(update_data)
             .eq("id", job_id)
             .eq("status", JobStatus.QUEUED.value)  # atomic guard
             .execute()
         )
 
         if response.data and len(response.data) > 0:
-            logger.info(f"Claimed job {job_id}")
+            logger.info(f"Claimed job {job_id} (worker: {worker_id})")
             return True
         else:
             logger.info(f"Job {job_id} already claimed by another worker")
@@ -125,7 +179,11 @@ def claim_job(job_id: str) -> bool:
 
 
 def complete_job(job_id: str, logs: str = "") -> bool:
-    """Mark a job as completed."""
+    """Mark a job as completed.
+
+    Returns:
+        True if the job was successfully marked completed, False otherwise.
+    """
     try:
         client = get_client()
 
@@ -136,9 +194,19 @@ def complete_job(job_id: str, logs: str = "") -> bool:
         if logs:
             update_data["logs"] = logs
 
-        client.table("processing_jobs").update(update_data).eq("id", job_id).execute()
-        logger.info(f"Job {job_id} marked as completed")
-        return True
+        response = (
+            client.table("processing_jobs")
+            .update(update_data)
+            .eq("id", job_id)
+            .execute()
+        )
+
+        success = bool(response.data and len(response.data) > 0)
+        if success:
+            logger.info(f"Job {job_id} marked as completed")
+        else:
+            logger.warning(f"Job {job_id} complete update affected 0 rows")
+        return success
 
     except Exception as e:
         logger.error(f"Failed to complete job {job_id}: {e}")
@@ -148,32 +216,63 @@ def complete_job(job_id: str, logs: str = "") -> bool:
 def fail_job(job_id: str, error_message: str) -> bool:
     """Mark a job as failed and increment retry_count.
 
-    If retry_count < max, the job will be re-queued by a separate scheduler.
+    Uses the atomic ``fail_job_atomic`` Postgres RPC function when available,
+    falling back to a read-modify-write approach if the function has not been
+    deployed yet.
+
+    If retry_count + 1 >= max_retries, the job is set to 'failed';
+    otherwise it is re-queued ('queued').
+
+    Returns:
+        True if the operation succeeded, False otherwise.
     """
     try:
         client = get_client()
 
-        # First, get current retry_count
+        # ── Preferred path: atomic RPC ──
+        try:
+            client.rpc("fail_job_atomic", {
+                "p_job_id": job_id,
+                "p_max_retries": config.max_retry_count,
+                "p_error_message": error_message[:5000],
+            }).execute()
+            logger.info(f"Job {job_id} failed via atomic RPC")
+            return True
+        except Exception as rpc_err:
+            # RPC function may not be deployed yet — fall back gracefully
+            logger.debug(f"RPC fail_job_atomic not available ({rpc_err}), using fallback")
+
+        # ── Fallback: read-modify-write (not race-safe) ──
         response = (
             client.table("processing_jobs")
-            .select("retry_count")
+            .select("retry_count, max_retries")
             .eq("id", job_id)
             .execute()
         )
 
         current_retries = 0
+        max_retries = config.max_retry_count
         if response.data and len(response.data) > 0:
-            current_retries = response.data[0].get("retry_count", 0)
+            row = response.data[0]
+            current_retries = row.get("retry_count", 0)
+            max_retries = row.get("max_retries", config.max_retry_count)
+
+        new_retry_count = current_retries + 1
+        new_status = (
+            JobStatus.FAILED.value
+            if new_retry_count >= max_retries
+            else JobStatus.QUEUED.value
+        )
 
         update_data: dict[str, Any] = {
-            "status": JobStatus.FAILED.value,
+            "status": new_status,
             "finished_at": datetime.now(timezone.utc).isoformat(),
-            "retry_count": current_retries + 1,
-            "logs": error_message[:5000],  # Truncate very long error messages
+            "retry_count": new_retry_count,
+            "logs": error_message[:5000],
         }
 
         client.table("processing_jobs").update(update_data).eq("id", job_id).execute()
-        logger.info(f"Job {job_id} marked as failed (retry #{current_retries + 1})")
+        logger.info(f"Job {job_id} marked as {new_status} (retry #{new_retry_count})")
         return True
 
     except Exception as e:
@@ -211,12 +310,31 @@ def create_job(
         return None
 
 
-def append_job_log(job_id: str, log_line: str) -> None:
-    """Append a log line to a job's existing logs."""
+def append_job_log(job_id: str, log_line: str) -> bool:
+    """Append a log line to a job's existing logs.
+
+    Uses the atomic ``append_job_log`` Postgres RPC function when available,
+    falling back to a read-modify-write approach if the function has not been
+    deployed yet.
+
+    Returns:
+        True if the append succeeded, False otherwise.
+    """
     try:
         client = get_client()
 
-        # Get current logs
+        # ── Preferred path: atomic RPC ──
+        try:
+            client.rpc("append_job_log", {
+                "p_job_id": job_id,
+                "p_log_line": log_line,
+            }).execute()
+            return True
+        except Exception as rpc_err:
+            # RPC function may not be deployed yet — fall back gracefully
+            logger.debug(f"RPC append_job_log not available ({rpc_err}), using fallback")
+
+        # ── Fallback: read-modify-write (not race-safe) ──
         response = (
             client.table("processing_jobs")
             .select("logs")
@@ -234,10 +352,21 @@ def append_job_log(job_id: str, log_line: str) -> None:
         if len(updated_logs) > 5000:
             updated_logs = "...\n" + updated_logs[-4900:]
 
-        client.table("processing_jobs").update({"logs": updated_logs}).eq("id", job_id).execute()
+        result = (
+            client.table("processing_jobs")
+            .update({"logs": updated_logs})
+            .eq("id", job_id)
+            .execute()
+        )
+
+        success = bool(result.data and len(result.data) > 0)
+        if not success:
+            logger.warning(f"append_job_log update affected 0 rows for job {job_id}")
+        return success
 
     except Exception as e:
         logger.error(f"Failed to append log to job {job_id}: {e}")
+        return False
 
 
 # ── Scene Operations ─────────────────────────────────────────────────────
@@ -280,12 +409,19 @@ def update_scene_status(scene_id: str, status: SceneStatus) -> bool:
     try:
         client = get_client()
 
-        client.table("scenes").update({
-            "status": status.value,
-        }).eq("id", scene_id).execute()
+        response = (
+            client.table("scenes")
+            .update({"status": status.value})
+            .eq("id", scene_id)
+            .execute()
+        )
 
-        logger.info(f"Scene {scene_id} status → {status.value}")
-        return True
+        success = bool(response.data and len(response.data) > 0)
+        if success:
+            logger.info(f"Scene {scene_id} status → {status.value}")
+        else:
+            logger.warning(f"update_scene_status affected 0 rows for scene {scene_id}")
+        return success
 
     except Exception as e:
         logger.error(f"Failed to update scene status: {e}")
@@ -299,20 +435,33 @@ def complete_scene(
     quality_score: float,
     processing_time_seconds: int,
 ) -> bool:
-    """Mark a scene as ready with all outputs."""
+    """Mark a scene as ready with all outputs.
+
+    Returns:
+        True if the scene was successfully marked ready, False otherwise.
+    """
     try:
         client = get_client()
 
-        client.table("scenes").update({
-            "status": SceneStatus.READY.value,
-            "model_url": model_url,
-            "thumbnail_url": thumbnail_url,
-            "quality_score": quality_score,
-            "processing_time_seconds": processing_time_seconds,
-        }).eq("id", scene_id).execute()
+        response = (
+            client.table("scenes")
+            .update({
+                "status": SceneStatus.READY.value,
+                "model_url": model_url,
+                "thumbnail_url": thumbnail_url,
+                "quality_score": quality_score,
+                "processing_time_seconds": processing_time_seconds,
+            })
+            .eq("id", scene_id)
+            .execute()
+        )
 
-        logger.info(f"Scene {scene_id} marked as ready")
-        return True
+        success = bool(response.data and len(response.data) > 0)
+        if success:
+            logger.info(f"Scene {scene_id} marked as ready")
+        else:
+            logger.warning(f"complete_scene affected 0 rows for scene {scene_id}")
+        return success
 
     except Exception as e:
         logger.error(f"Failed to complete scene: {e}")
@@ -320,16 +469,27 @@ def complete_scene(
 
 
 def fail_scene(scene_id: str) -> bool:
-    """Mark a scene as failed."""
+    """Mark a scene as failed.
+
+    Returns:
+        True if the scene was successfully marked failed, False otherwise.
+    """
     try:
         client = get_client()
 
-        client.table("scenes").update({
-            "status": SceneStatus.FAILED.value,
-        }).eq("id", scene_id).execute()
+        response = (
+            client.table("scenes")
+            .update({"status": SceneStatus.FAILED.value})
+            .eq("id", scene_id)
+            .execute()
+        )
 
-        logger.info(f"Scene {scene_id} marked as failed")
-        return True
+        success = bool(response.data and len(response.data) > 0)
+        if success:
+            logger.info(f"Scene {scene_id} marked as failed")
+        else:
+            logger.warning(f"fail_scene affected 0 rows for scene {scene_id}")
+        return success
 
     except Exception as e:
         logger.error(f"Failed to fail scene: {e}")

@@ -18,10 +18,9 @@ export function ProgressBar({
   const stepProgress = Math.round(
     ((currentStepIndex + 1) / totalSteps) * 100
   );
-  const photoProgress = Math.min(
-    Math.round((photosTaken / estimatedTotal) * 100),
-    100
-  );
+  const photoProgress = estimatedTotal > 0
+    ? Math.min(Math.round((photosTaken / estimatedTotal) * 100), 100)
+    : 0;
 
   return (
     <div className="space-y-3">

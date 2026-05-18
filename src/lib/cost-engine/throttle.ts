@@ -4,6 +4,13 @@
 // Implements free-tier usage limits, throttling delays,
 // and smart queue prioritization for job scheduling.
 // Gracefully handles missing Supabase configuration.
+//
+// IMPORTANT (fail-safe): When the system cannot determine
+// whether a user has exceeded their limits (e.g., database
+// query failure), it defaults to ALLOWING the request but
+// tracks that verification failed. For critical paths that
+// require definitive answers, callers should check the
+// `verificationFailed` flag.
 // ============================================
 
 import { createClient } from "@/lib/supabase/server";
@@ -38,6 +45,7 @@ const THROTTLE_DELAYS = [
 export async function checkFreeTierLimits(orgId: string): Promise<{
   exceeded: boolean;
   limits: Record<string, { current: number; max: number; exceeded: boolean }>;
+  verificationFailed: boolean;
 }> {
   const limits: Record<string, { current: number; max: number; exceeded: boolean }> = {
     maxProperties: { current: 0, max: FREE_TIER_LIMITS.maxProperties, exceeded: false },
@@ -46,10 +54,13 @@ export async function checkFreeTierLimits(orgId: string): Promise<{
     maxViewSessions: { current: 0, max: FREE_TIER_LIMITS.maxViewSessions, exceeded: false },
   };
 
+  let verificationFailed = false;
+
   try {
     const supabase = await createClient();
     if (!supabase) {
-      return { exceeded: false, limits };
+      // Can't verify — return with verificationFailed flag
+      return { exceeded: false, limits, verificationFailed: true };
     }
 
     // Check org plan first — only free tier gets limited
@@ -60,13 +71,13 @@ export async function checkFreeTierLimits(orgId: string): Promise<{
       .single();
 
     if (orgError || !org) {
-      return { exceeded: false, limits };
+      return { exceeded: false, limits, verificationFailed: true };
     }
 
     const plan = (org.plan ?? "free").toLowerCase();
     if (plan !== "free") {
       // Pro/Business have no free tier limits
-      return { exceeded: false, limits };
+      return { exceeded: false, limits, verificationFailed: false };
     }
 
     // Count properties
@@ -75,7 +86,10 @@ export async function checkFreeTierLimits(orgId: string): Promise<{
       .select("id", { count: "exact", head: true })
       .eq("org_id", orgId);
 
-    if (!propError && propertyCount !== null) {
+    if (propError) {
+      console.error("[Throttle] Failed to count properties for org", orgId, ":", propError);
+      verificationFailed = true;
+    } else if (propertyCount !== null) {
       limits.maxProperties.current = propertyCount;
       limits.maxProperties.exceeded = propertyCount >= FREE_TIER_LIMITS.maxProperties;
     }
@@ -94,7 +108,10 @@ export async function checkFreeTierLimits(orgId: string): Promise<{
         ).data?.map((p: { id: string }) => p.id) ?? [],
       );
 
-    if (!sceneError && sceneCount !== null) {
+    if (sceneError) {
+      console.error("[Throttle] Failed to count scenes for org", orgId, ":", sceneError);
+      verificationFailed = true;
+    } else if (sceneCount !== null) {
       limits.max3DGenerations.current = sceneCount;
       limits.max3DGenerations.exceeded = sceneCount >= FREE_TIER_LIMITS.max3DGenerations;
     }
@@ -108,7 +125,10 @@ export async function checkFreeTierLimits(orgId: string): Promise<{
       .order("created_at", { ascending: false })
       .limit(1);
 
-    if (!storageError && storageData && storageData.length > 0) {
+    if (storageError) {
+      console.error("[Throttle] Failed to get storage usage for org", orgId, ":", storageError);
+      verificationFailed = true;
+    } else if (storageData && storageData.length > 0) {
       const storageMb = Number(storageData[0].value) || 0;
       limits.maxStorageMb.current = storageMb;
       limits.maxStorageMb.exceeded = storageMb >= FREE_TIER_LIMITS.maxStorageMb;
@@ -123,7 +143,10 @@ export async function checkFreeTierLimits(orgId: string): Promise<{
       .order("created_at", { ascending: false })
       .limit(1);
 
-    if (!viewError && viewData && viewData.length > 0) {
+    if (viewError) {
+      console.error("[Throttle] Failed to get view sessions for org", orgId, ":", viewError);
+      verificationFailed = true;
+    } else if (viewData && viewData.length > 0) {
       const views = Number(viewData[0].value) || 0;
       limits.maxViewSessions.current = views;
       limits.maxViewSessions.exceeded = views >= FREE_TIER_LIMITS.maxViewSessions;
@@ -131,10 +154,12 @@ export async function checkFreeTierLimits(orgId: string): Promise<{
 
     const exceeded = Object.values(limits).some((l) => l.exceeded);
 
-    return { exceeded, limits };
+    return { exceeded, limits, verificationFailed };
   } catch (err) {
     console.error("[Throttle] checkFreeTierLimits error:", err);
-    return { exceeded: false, limits };
+    // Fail-safe: when we can't determine limits at all, mark verification
+    // as failed so callers can decide whether to allow or deny.
+    return { exceeded: false, limits, verificationFailed: true };
   }
 }
 

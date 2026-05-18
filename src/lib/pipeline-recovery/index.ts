@@ -284,7 +284,9 @@ export class RecoveryService {
   private detector = new OrphanDetector();
 
   /**
-   * Log a recovery action to the system_logs table
+   * Log a recovery action to the system_logs table.
+   * Errors during logging are caught and sent to console.error
+   * so they don't mask the actual recovery result.
    */
   private async logRecovery(
     level: string,
@@ -295,13 +297,22 @@ export class RecoveryService {
     const supabase = await createClient();
     if (!supabase) return;
 
-    await supabase.from("system_logs").insert({
-      level,
-      source,
-      message,
-      metadata,
-      created_at: new Date().toISOString(),
-    });
+    try {
+      await supabase.from("system_logs").insert({
+        level,
+        source,
+        message,
+        metadata,
+        created_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      // Don't let logging failures mask recovery results.
+      // Log to console as fallback so the information isn't lost entirely.
+      console.error(
+        `[RecoveryService] Failed to write recovery log (level=${level}, source=${source}):`,
+        err,
+      );
+    }
   }
 
   /**
@@ -363,10 +374,14 @@ export class RecoveryService {
       return "recovered";
     }
 
-    // For recently orphaned sessions, reset to started so user can retry
+    // For recently orphaned sessions, reset to started so user can retry.
+    // IMPORTANT: Do NOT reset started_at — preserving the original start time
+    // is critical for measuring true session duration and detecting future
+    // orphaned sessions. Resetting started_at would mask how long the session
+    // has actually been active.
     await supabase
       .from("capture_sessions")
-      .update({ status: "started", started_at: new Date().toISOString() })
+      .update({ status: "started" })
       .eq("id", sessionId);
 
     await this.logRecovery("info", "recovery", "Orphan session reactivated", {
