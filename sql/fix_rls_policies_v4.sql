@@ -393,6 +393,8 @@ COMMENT ON COLUMN public.events.event_type IS
 --   failed → queued (retry)
 -- ============================================
 
+-- NOTE: State machine enforcement moved to trigger (see FIX 10b below)
+-- because OLD/NEW are not available in RLS WITH CHECK clauses.
 DROP POLICY IF EXISTS "Workers can update processing jobs" ON public.processing_jobs;
 CREATE POLICY "Workers can update processing jobs"
   ON public.processing_jobs FOR UPDATE
@@ -407,10 +409,51 @@ CREATE POLICY "Workers can update processing jobs"
     OR auth.role() = 'service_role'
   )
   WITH CHECK (
-    (OLD.status = 'queued' AND NEW.status IN ('running', 'failed'))
-    OR (OLD.status = 'running' AND NEW.status IN ('completed', 'failed'))
-    OR (OLD.status = 'failed' AND NEW.status = 'queued')
+    scene_id IN (
+      SELECT id FROM public.scenes
+      WHERE property_id IN (
+        SELECT id FROM public.properties
+        WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+      )
+    )
+    OR auth.role() = 'service_role'
   );
+
+-- ============================================
+-- FIX 10b: State machine trigger for processing_jobs
+-- Enforces valid status transitions:
+--   queued → running
+--   queued → failed
+--   running → completed
+--   running → failed
+--   failed → queued (retry)
+-- ============================================
+
+DROP FUNCTION IF EXISTS public.enforce_processing_jobs_state_machine() CASCADE;
+CREATE OR REPLACE FUNCTION public.enforce_processing_jobs_state_machine()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = ''
+AS $$
+BEGIN
+  IF OLD.status IS DISTINCT FROM NEW.status THEN
+    IF NOT (
+      (OLD.status = 'queued' AND NEW.status IN ('running', 'failed'))
+      OR (OLD.status = 'running' AND NEW.status IN ('completed', 'failed'))
+      OR (OLD.status = 'failed' AND NEW.status = 'queued')
+    ) THEN
+      RAISE EXCEPTION 'Invalid processing_jobs status transition: % → %', OLD.status, NEW.status;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_processing_jobs_state_machine ON public.processing_jobs;
+CREATE TRIGGER trg_processing_jobs_state_machine
+  BEFORE UPDATE ON public.processing_jobs
+  FOR EACH ROW
+  EXECUTE FUNCTION public.enforce_processing_jobs_state_machine();
 
 -- ============================================
 -- FIX 11: Ensure processing_jobs status CHECK
