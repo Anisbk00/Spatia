@@ -23,6 +23,9 @@ export default async function ExplorePage() {
   let user: User | null = null;
   let profile: { role: string; email: string; full_name: string | null } | null = null;
 
+  // Create admin client once for all queries
+  const adminClient = createAdminClient();
+
   if (supabase) {
     try {
       const { data, error } = await supabase.auth.getUser();
@@ -51,9 +54,6 @@ export default async function ExplorePage() {
       }
     }
   }
-
-  // Create admin client once for remaining queries
-  const adminClient = createAdminClient();
 
   // Fetch real public properties with scene data
   let properties: Property[] = [];
