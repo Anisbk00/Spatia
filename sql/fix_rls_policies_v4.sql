@@ -47,6 +47,7 @@ BEGIN;
 -- (Must exist before policies reference them)
 -- ============================================
 
+DROP FUNCTION IF EXISTS public.get_user_org_ids(uuid);
 CREATE OR REPLACE FUNCTION public.get_user_org_ids(target_uid uuid)
 RETURNS uuid[]
 LANGUAGE sql
@@ -58,6 +59,7 @@ AS $$
   WHERE user_id = target_uid
 $$;
 
+DROP FUNCTION IF EXISTS public.get_user_org_ids_with_role(uuid, text);
 CREATE OR REPLACE FUNCTION public.get_user_org_ids_with_role(target_uid uuid, target_role text)
 RETURNS uuid[]
 LANGUAGE sql
@@ -69,6 +71,7 @@ AS $$
   WHERE user_id = target_uid AND role = target_role
 $$;
 
+DROP FUNCTION IF EXISTS public.is_org_member(uuid);
 CREATE OR REPLACE FUNCTION public.is_org_member(target_org_id uuid)
 RETURNS boolean
 LANGUAGE sql
@@ -300,6 +303,7 @@ CREATE POLICY "Org members can manage usage metrics"
 -- FIX 5: Restrict get_funnel_stats() to admins
 -- ============================================
 
+DROP FUNCTION IF EXISTS public.get_funnel_stats();
 CREATE OR REPLACE FUNCTION public.get_funnel_stats()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -336,6 +340,7 @@ $$;
 -- FIX 6: Restrict get_system_monitoring() to admins
 -- ============================================
 
+DROP FUNCTION IF EXISTS public.get_system_monitoring();
 CREATE OR REPLACE FUNCTION public.get_system_monitoring()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -604,6 +609,7 @@ ALTER TABLE public.invoices
 -- duplicate inserts gracefully
 -- ============================================
 
+DROP FUNCTION IF EXISTS public.handle_new_user();
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -629,6 +635,7 @@ $$;
 -- bypassing restrictive RLS policies
 -- ============================================
 
+DROP FUNCTION IF EXISTS public.handle_updated_at();
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -645,6 +652,7 @@ $$;
 -- Max 100 iterations to prevent infinite loops
 -- ============================================
 
+DROP FUNCTION IF EXISTS public.generate_referral_code();
 CREATE OR REPLACE FUNCTION public.generate_referral_code()
 RETURNS text
 LANGUAGE plpgsql
