@@ -552,7 +552,7 @@ export class JobOrchestrator {
         (err.message.includes("duplicate key") ||
          err.message.includes("unique constraint") ||
          err.message.includes("UNIQUE") ||
-         (err as Record<string, unknown>)?.code === "23505");
+         (err as unknown as Record<string, unknown>)?.code === "23505");
 
       if (isDuplicate) {
         // Race condition — another worker inserted the same job.
