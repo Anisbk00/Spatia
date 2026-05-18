@@ -6,7 +6,7 @@ import {
   CardContent,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Home, Rotate3d, LogOut, MapPin, Plus, Video } from "lucide-react";
+import { Home, Rotate3d, LogOut, MapPin, Plus } from "lucide-react";
 import { SpatiaLogo } from "@/components/SpatiaLogo";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { signOutAction } from "@/lib/actions/auth";
@@ -63,21 +63,13 @@ export function ExploreContent({
             <LanguageSwitcher />
             {user ? (
               <>
-                {(profile?.role === "agent" || profile?.role === "admin") && (
-                  <Button variant="ghost" size="sm" asChild>
-                    <a href="/dashboard">{tn("dashboard")}</a>
-                  </Button>
-                )}
+                <Button variant="ghost" size="sm" asChild>
+                  <a href="/dashboard">{tn("dashboard")}</a>
+                </Button>
                 <Button variant="ghost" size="sm" asChild>
                   <a href="/properties/new">
                     <Plus className="mr-1 h-4 w-4" />
                     {tn("newProperty")}
-                  </a>
-                </Button>
-                <Button variant="ghost" size="sm" asChild className="text-emerald-700">
-                  <a href="/properties/new?mode=video">
-                    <Video className="mr-1 h-4 w-4" />
-                    {t("videoCapture")}
                   </a>
                 </Button>
                 <form action={signOutAction}>
