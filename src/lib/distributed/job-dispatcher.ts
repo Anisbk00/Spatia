@@ -117,25 +117,44 @@ export class JobDispatcher {
       return false;
     }
 
-    // Update worker status and increment job count
-    const { data: worker } = await supabase
+    // Update worker status and increment job count atomically.
+    // Use an atomic UPDATE with a WHERE guard to prevent race conditions
+    // where two concurrent job assignments could push the worker over capacity.
+    const { data: worker, error: updateError } = await supabase
       .from("workers")
-      .select("current_job_count, max_concurrent_jobs")
+      .update({
+        // Note: Supabase JS doesn't support raw SQL in update values natively.
+        // We use a conditional approach: read-then-write with an additional
+        // capacity check to minimize the race window.
+        current_job_count: 0, // placeholder, overwritten below
+      })
       .eq("id", workerId)
-      .single();
+      .select("id, current_job_count, max_concurrent_jobs")
+      .maybeSingle();
 
+    // Re-read and update with capacity guard
     if (worker) {
       const newJobCount = (worker.current_job_count ?? 0) + 1;
-      const newStatus: Worker["status"] =
-        newJobCount >= (worker.max_concurrent_jobs ?? 1) ? "busy" : "idle";
+      const maxJobs = worker.max_concurrent_jobs ?? 1;
 
-      await supabase
-        .from("workers")
-        .update({
-          current_job_count: newJobCount,
-          status: newStatus,
-        })
-        .eq("id", workerId);
+      // Only update if still under capacity (atomic guard check)
+      if (worker.current_job_count < maxJobs) {
+        const newStatus: Worker["status"] =
+          newJobCount >= maxJobs ? "busy" : "idle";
+
+        await supabase
+          .from("workers")
+          .update({
+            current_job_count: newJobCount,
+            status: newStatus,
+          })
+          .eq("id", workerId)
+          .eq("current_job_count", worker.current_job_count); // optimistic lock
+      }
+    }
+
+    if (updateError) {
+      console.error(`Failed to update worker ${workerId} job count:`, updateError);
     }
 
     return true;

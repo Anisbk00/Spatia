@@ -3,6 +3,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MapPin, Rotate3d, Building2 } from "lucide-react";
+import Link from "next/link";
 import type { Property, Scene } from "@/lib/types";
 
 interface PropertyHeroProps {
@@ -75,10 +76,10 @@ export function PropertyHero({ property, scene }: PropertyHeroProps) {
             size="lg"
             className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2 rounded-full px-8 shadow-lg shadow-emerald-600/20"
           >
-            <a href={`/view/${property.id}`}>
+            <Link href={`/view/${property.id}`}>
               <Rotate3d className="h-5 w-5" />
               Explore in 3D
-            </a>
+            </Link>
           </Button>
         )}
       </div>

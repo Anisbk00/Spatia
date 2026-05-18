@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/server";
 
 // ============================================
 // Types
@@ -92,7 +92,7 @@ export class BatchWriter {
 
       while (retries <= this.maxRetries && !success) {
         try {
-          const supabase = await createClient();
+          const supabase = createAdminClient();
           if (!supabase) {
             totalFailed += rows.length;
             break;
@@ -101,25 +101,40 @@ export class BatchWriter {
           const { error } = await supabase.from(table).insert(rows);
 
           if (error) {
-            retries++;
-            if (retries > this.maxRetries) {
+            // Classify errors: only retry on network/timeout/server errors
+            const isRetryable =
+              error.message?.includes('network') ||
+              error.message?.includes('timeout') ||
+              error.message?.includes('ECONNREFUSED') ||
+              error.code === '5XX' ||
+              (typeof error.status === 'number' && error.status >= 500);
+
+            if (!isRetryable || retries >= this.maxRetries) {
+              console.error('[BatchWriter] Non-retryable error:', error.message);
               totalFailed += rows.length;
-            } else {
-              // Exponential backoff
-              await new Promise((resolve) =>
-                setTimeout(resolve, Math.min(1000 * Math.pow(2, retries), 10000))
-              );
+              break;
             }
+
+            retries++;
+            // Exponential backoff
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.min(1000 * Math.pow(2, retries), 10000))
+            );
           } else {
             totalInserted += rows.length;
             success = true;
           }
         } catch (err) {
-          console.error("[BatchWriter] Insert batch failed:", err);
+          console.error('[BatchWriter] Insert batch failed:', err);
           retries++;
           if (retries > this.maxRetries) {
             totalFailed += rows.length;
+            break;
           }
+          // Exponential backoff for transient exceptions
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(1000 * Math.pow(2, retries), 10000))
+          );
         }
       }
     }

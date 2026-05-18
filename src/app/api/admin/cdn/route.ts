@@ -67,11 +67,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const body = await request.json();
+  // Validate input with try/catch
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
   const { scene_id } = body as { scene_id?: string };
 
-  if (!scene_id) {
-    return NextResponse.json({ error: "scene_id is required" }, { status: 400 });
+  if (!scene_id || typeof scene_id !== "string") {
+    return NextResponse.json({ error: "scene_id is required and must be a string" }, { status: 400 });
+  }
+
+  // Validate scene_id is a valid UUID format
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_REGEX.test(scene_id)) {
+    return NextResponse.json({ error: "scene_id must be a valid UUID" }, { status: 400 });
   }
 
   const cdn = getCDNManager();

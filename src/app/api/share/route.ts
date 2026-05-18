@@ -22,6 +22,11 @@ interface ShareRequest {
 
 const VALID_SHARE_METHODS = ["link", "qr", "social"] as const;
 
+// Per-user rate limiting (max 50 share events/user/minute)
+const SHARE_RATE_LIMIT = 50;
+const SHARE_RATE_WINDOW = 60_000;
+const shareRateMap = new Map<string, { count: number; resetAt: number }>();
+
 // ============================================
 // POST — Track share event
 // ============================================
@@ -43,6 +48,18 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Per-user rate limiting
+  const now = Date.now();
+  const shareUserKey = user.id;
+  const shareLimit = shareRateMap.get(shareUserKey);
+  if (shareLimit && now < shareLimit.resetAt && shareLimit.count >= SHARE_RATE_LIMIT) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+  if (!shareLimit || now >= shareLimit.resetAt) {
+    shareRateMap.set(shareUserKey, { count: 0, resetAt: now + SHARE_RATE_WINDOW });
+  }
+  shareRateMap.get(shareUserKey)!.count += 1;
 
   const adminClient = createAdminClient();
   const dataClient = adminClient || supabase;

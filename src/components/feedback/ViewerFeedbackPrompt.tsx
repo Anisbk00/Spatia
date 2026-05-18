@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
@@ -25,6 +25,16 @@ export function ViewerFeedbackPrompt({
   const [isVisible, setIsVisible] = useState(visible);
   const [hasResponded, setHasResponded] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const dismissTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (dismissTimeoutRef.current) {
+        clearTimeout(dismissTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Auto-dismiss after 10 seconds
   const dismiss = useCallback(() => {
@@ -97,7 +107,8 @@ export function ViewerFeedbackPrompt({
     } finally {
       setIsSubmitting(false);
       // Dismiss after a brief moment so the user sees the response
-      setTimeout(dismiss, 800);
+      if (dismissTimeoutRef.current) clearTimeout(dismissTimeoutRef.current);
+      dismissTimeoutRef.current = setTimeout(dismiss, 800);
     }
   };
 

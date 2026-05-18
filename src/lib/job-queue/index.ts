@@ -680,7 +680,13 @@ export class JobOrchestrator {
     // Check if the error is retryable
     if (isRetryableError(error) && this.retryManager.shouldRetry(processingJob)) {
       // Release the lock and schedule retry
-      await this.idempotencyGuard.releaseJobLock(jobId, false, logs);
+      const released = await this.idempotencyGuard.releaseJobLock(jobId, false, logs);
+      if (!released) {
+        // Job already in terminal state (e.g., another worker completed it),
+        // do NOT proceed to schedule a retry.
+        console.log(`[JobQueue] Job ${jobId} already in terminal state, skipping retry`);
+        return false;
+      }
 
       // Schedule the retry (this will requeue the job)
       const retryScheduled = await this.retryManager.scheduleRetry(

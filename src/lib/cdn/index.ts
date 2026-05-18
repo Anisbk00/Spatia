@@ -71,6 +71,17 @@ export class CDNManager {
       const supabase = await createClient();
       if (!supabase) return null;
 
+      // TODO(MO4): CDN URLs are currently not signed. Implement signed URLs
+      // (e.g., HMAC-based or cloud-provider signed URLs) to prevent unauthorized
+      // access and hotlinking of CDN-hosted scene assets.
+
+      // Validate scene_id matches UUID format before constructing the URL
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(sceneId)) {
+        console.warn(`[CDNManager] Invalid scene_id format: ${sceneId}`);
+        return null;
+      }
+
       // Look up the scene to verify it exists and is ready
       const { data: scene, error } = await supabase
         .from("scenes")
@@ -287,9 +298,13 @@ export class CDNManager {
       if (!supabase) return emptyResult;
 
       // Query cdn_cache for aggregate stats
+      // NOTE(M4): A LIMIT is applied to prevent unbounded row loading.
+      // For production scale, this should use SQL aggregation (COUNT, SUM)
+      // via a Supabase RPC function to avoid transferring all rows to the app layer.
       const { data: cacheEntries, error: cacheError } = await supabase
         .from("cdn_cache")
-        .select("scene_id, region, compressed_size_bytes");
+        .select("scene_id, region, compressed_size_bytes")
+        .limit(10000);
 
       if (cacheError || !cacheEntries) {
         return emptyResult;
@@ -299,15 +314,18 @@ export class CDNManager {
       const byRegion: Record<string, number> = {};
 
       for (const entry of cacheEntries) {
-        totalSize += (entry.compressed_size_bytes as number) || 0;
-        const r = entry.region as string;
+        totalSize += typeof entry.compressed_size_bytes === "number" ? entry.compressed_size_bytes : 0;
+        const r = typeof entry.region === "string" ? entry.region : "unknown";
         byRegion[r] = (byRegion[r] || 0) + 1;
       }
 
       // Query cdn_access_log for hit rate calculation
+      // NOTE(M4): A LIMIT is applied to prevent unbounded row loading.
+      // For production scale, this should use SQL aggregation via RPC.
       const { data: accessLogs, error: logError } = await supabase
         .from("cdn_access_log")
-        .select("scene_id, region");
+        .select("scene_id, region")
+        .limit(10000);
 
       let hitRate = 0;
       if (!logError && accessLogs && accessLogs.length > 0) {
@@ -334,17 +352,18 @@ export class CDNManager {
   }
 
   /**
-   * Estimate compression savings for scene data.
+   * Get the theoretical compression ratio for scene data.
    *
-   * Analyzes scene data and estimates compression ratios.
-   * This is an estimation function — it does NOT actually compress data.
-   * In production, actual mesh/point cloud compression would be performed
-   * by the GPU worker pipeline.
+   * Returns a **fixed theoretical estimate** (55% of original size) based on
+   * typical gaussian splat compression with quantization + entropy coding.
+   * This does NOT measure actual compression — it is a constant ratio applied
+   * to the JSON-serialized size of the input. In production, actual mesh/point
+   * cloud compression would be performed by the GPU worker pipeline.
    *
    * @param sceneData - The scene data object to analyze
    * @returns Compression estimation with original/estimated-compressed sizes and ratio
    */
-  estimateCompressionSavings(sceneData: SceneDataInput): {
+  getTheoreticalCompressionRatio(sceneData: SceneDataInput): {
     original: number;
     compressed: number;
     ratio: number;
@@ -375,7 +394,7 @@ export class CDNManager {
   }
 
   /**
-   * @deprecated Use `estimateCompressionSavings` instead.
+   * @deprecated Use `getTheoreticalCompressionRatio` instead.
    * Kept as an alias for backward compatibility.
    */
   compressSceneData(sceneData: SceneDataInput): {
@@ -383,7 +402,7 @@ export class CDNManager {
     compressed: number;
     ratio: number;
   } {
-    return this.estimateCompressionSavings(sceneData);
+    return this.getTheoreticalCompressionRatio(sceneData);
   }
 
   /**

@@ -125,8 +125,14 @@ export class DataPipelineOptimizer {
         }
 
         if (resolution) {
-          const [width, height] = resolution.split("x").map(Number);
-          if (width < 640 || height < 480) {
+          const parts = resolution.split("x").map(Number);
+          const [w, h] = parts;
+          if (isNaN(w) || isNaN(h)) {
+            // Invalid resolution format, count as low quality
+            lowQualityImages++;
+            continue;
+          }
+          if (w < 640 || h < 480) {
             lowQualityImages++;
             continue;
           }

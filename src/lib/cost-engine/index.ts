@@ -71,8 +71,8 @@ export class CostEngine {
       if (!supabase) return null;
 
       const now = new Date();
-      const billingPeriodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-      const billingPeriodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString();
+      const billingPeriodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+      const billingPeriodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).toISOString();
 
       const defaultCost = DEFAULT_UNIT_COSTS[params.costType];
       const unitCostUsd = defaultCost
@@ -125,7 +125,7 @@ export class CostEngine {
       const supabase = await createClient();
       if (!supabase) return null;
 
-      const start = periodStart ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+      const start = periodStart ?? new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString();
       const end = periodEnd ?? new Date().toISOString();
 
       // Try RPC first

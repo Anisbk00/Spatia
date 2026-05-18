@@ -147,12 +147,9 @@ export class MonitoringSystem {
         .eq("status", "ready");
 
       // Cost stats
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
+      const todayStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
 
-      const monthStart = new Date();
-      monthStart.setDate(1);
-      monthStart.setHours(0, 0, 0, 0);
+      const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
 
       const { data: todayCosts } = await supabase
         .from("cost_records")
@@ -637,6 +634,10 @@ export class MonitoringSystem {
       }
 
       // Current total
+      // NOTE: This sum may double-count if multiple orgs report storage_used_mb
+      // for the same billing period. For accurate totals, use a GROUP BY org_id
+      // query or add DISTINCT org filtering. Current approach is acceptable for
+      // approximate monitoring dashboards.
       const currentTotalMb = currentStorage.reduce(
         (sum, m) => sum + (m.value || 0),
         0,

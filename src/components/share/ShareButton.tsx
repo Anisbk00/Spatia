@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -9,7 +9,6 @@ import {
 } from "@/components/ui/popover";
 import { Share2, Copy, QrCode, Check, MonitorSmartphone } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { trackEvent, EVENT_TYPES } from "@/lib/event-tracking";
 import { QRCodeModal } from "./QRCodeModal";
 
 interface ShareButtonProps {
@@ -22,11 +21,21 @@ export function ShareButton({ propertyId, propertyTitle }: ShareButtonProps) {
   const [qrOpen, setQrOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const { toast } = useToast();
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const propertyUrl =
     typeof window !== "undefined"
       ? `${window.location.origin}/property/${propertyId}`
       : `/property/${propertyId}`;
+
+  // Clean up timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (copiedTimeoutRef.current) {
+        clearTimeout(copiedTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleCopyLink = useCallback(async () => {
     try {
@@ -40,17 +49,7 @@ export function ShareButton({ propertyId, propertyTitle }: ShareButtonProps) {
         description: "Property link has been copied to your clipboard.",
       });
 
-      // Track events
-      trackEvent(EVENT_TYPES.SHARE_LINK_COPIED, {
-        property_id: propertyId,
-        method: "copy_link",
-      });
-      trackEvent(EVENT_TYPES.PROPERTY_SHARED, {
-        property_id: propertyId,
-        share_method: "link",
-      });
-
-      // Call share tracking API
+      // Call share tracking API (server-side tracking only)
       await fetch("/api/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -60,15 +59,25 @@ export function ShareButton({ propertyId, propertyTitle }: ShareButtonProps) {
         }),
       });
 
-      setTimeout(() => setCopied(false), 2000);
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       console.error("[ShareButton] Clipboard API failed, using fallback:", err);
       const textarea = document.createElement("textarea");
       textarea.value = propertyUrl;
       document.body.appendChild(textarea);
       textarea.select();
-      document.execCommand("copy");
+      const success = document.execCommand("copy");
       document.body.removeChild(textarea);
+
+      if (!success) {
+        toast({
+          title: "Copy failed",
+          description: "Could not copy the link. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
 
       setCopied(true);
       setPopoverOpen(false);
@@ -78,17 +87,18 @@ export function ShareButton({ propertyId, propertyTitle }: ShareButtonProps) {
         description: "Property link has been copied to your clipboard.",
       });
 
-      // Track events
-      trackEvent(EVENT_TYPES.SHARE_LINK_COPIED, {
-        property_id: propertyId,
-        method: "copy_link",
-      });
-      trackEvent(EVENT_TYPES.PROPERTY_SHARED, {
-        property_id: propertyId,
-        share_method: "link",
+      // Call share tracking API (server-side tracking only)
+      await fetch("/api/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          property_id: propertyId,
+          share_method: "link",
+        }),
       });
 
-      setTimeout(() => setCopied(false), 2000);
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
     }
   }, [propertyUrl, propertyId, toast]);
 
@@ -108,17 +118,7 @@ export function ShareButton({ propertyId, propertyTitle }: ShareButtonProps) {
 
         setPopoverOpen(false);
 
-        // Track events
-        trackEvent(EVENT_TYPES.SHARE_LINK_COPIED, {
-          property_id: propertyId,
-          method: "native_share",
-        });
-        trackEvent(EVENT_TYPES.PROPERTY_SHARED, {
-          property_id: propertyId,
-          share_method: "link",
-        });
-
-        // Call share tracking API
+        // Call share tracking API (server-side tracking only)
         await fetch("/api/share", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -149,6 +149,7 @@ export function ShareButton({ propertyId, propertyTitle }: ShareButtonProps) {
           <Button
             className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm gap-2"
             size="default"
+            aria-label="Share property"
           >
             <Share2 className="h-4 w-4" />
             Share
@@ -163,6 +164,7 @@ export function ShareButton({ propertyId, propertyTitle }: ShareButtonProps) {
             <button
               onClick={handleCopyLink}
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors cursor-pointer"
+              aria-label="Copy property link"
             >
               {copied ? (
                 <Check className="h-4 w-4 text-emerald-600" />
@@ -176,6 +178,7 @@ export function ShareButton({ propertyId, propertyTitle }: ShareButtonProps) {
             <button
               onClick={handleQRCode}
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors cursor-pointer"
+              aria-label="Show QR code"
             >
               <QrCode className="h-4 w-4 text-gray-500" />
               QR Code
@@ -185,6 +188,7 @@ export function ShareButton({ propertyId, propertyTitle }: ShareButtonProps) {
             <button
               onClick={handleNativeShare}
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors cursor-pointer"
+              aria-label={supportsNativeShare ? "Share via native share" : "Copy link to clipboard"}
             >
               <MonitorSmartphone className="h-4 w-4 text-gray-500" />
               {supportsNativeShare ? "Share via…" : "Copy Link"}

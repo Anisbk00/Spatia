@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import {
   RotateCcw,
@@ -24,11 +24,28 @@ export function ViewerControls({ viewerState, propertyTitle, shareUrl }: ViewerC
   const [showShareToast, setShowShareToast] = useState(false);
   const [copyError, setCopyError] = useState(false);
 
+  // Sync fullscreen state with the browser
+  useEffect(() => {
+    const handler = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+
+  // Clean up toast timeouts on unmount
+  const shareToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (shareToastTimerRef.current) clearTimeout(shareToastTimerRef.current);
+      if (copyErrorTimerRef.current) clearTimeout(copyErrorTimerRef.current);
+    };
+  }, []);
+
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+      document.documentElement.requestFullscreen().catch(() => {});
     } else {
-      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+      document.exitFullscreen().catch(() => {});
     }
   }, []);
 
@@ -46,11 +63,13 @@ export function ViewerControls({ viewerState, propertyTitle, shareUrl }: ViewerC
       await navigator.clipboard.writeText(shareUrl);
       setShowShareToast(true);
       setCopyError(false);
-      setTimeout(() => setShowShareToast(false), 2000);
+      if (shareToastTimerRef.current) clearTimeout(shareToastTimerRef.current);
+      shareToastTimerRef.current = setTimeout(() => setShowShareToast(false), 2000);
     } catch (err) {
       console.error("[ViewerControls] Clipboard API failed:", err);
       setCopyError(true);
-      setTimeout(() => setCopyError(false), 3000);
+      if (copyErrorTimerRef.current) clearTimeout(copyErrorTimerRef.current);
+      copyErrorTimerRef.current = setTimeout(() => setCopyError(false), 3000);
     }
   }, [shareUrl]);
 

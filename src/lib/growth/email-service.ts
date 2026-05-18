@@ -81,7 +81,7 @@ export async function sendEmail(message: EmailMessage): Promise<boolean> {
     console.error("[sendEmail] Failed to log to system_logs:", error);
   }
 
-  return true; // Return true since we logged it (delivery will be retried by provider when configured)
+  return false; // API send failed and no real delivery occurred
 }
 
 // ============================================
@@ -89,9 +89,19 @@ export async function sendEmail(message: EmailMessage): Promise<boolean> {
 // ============================================
 
 /**
- * Generate HTML for the welcome email.
+ * Escape HTML special characters to prevent XSS in email templates.
  */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 export function getWelcomeEmailHtml(userName: string): string {
+  const safeName = escapeHtml(userName);
   return `
 <!DOCTYPE html>
 <html lang="en">
@@ -104,7 +114,7 @@ export function getWelcomeEmailHtml(userName: string): string {
   <div style="max-width: 600px; margin: 0 auto; padding: 40px 20px;">
     <div style="background-color: #ffffff; border-radius: 12px; padding: 40px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
       <h1 style="margin: 0 0 20px; font-size: 24px; font-weight: 700; color: #111827;">
-        Welcome to PropView3D, ${userName}! 🏠
+        Welcome to PropView3D, ${safeName}! 🏠
       </h1>
       <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #4b5563;">
         We're excited to have you on board. PropView3D transforms your phone photos into
@@ -140,6 +150,7 @@ export function getSceneReadyEmailHtml(
   propertyTitle: string,
   propertyId: string,
 ): string {
+  const safeTitle = escapeHtml(propertyTitle);
   const viewUrl = `/view/${propertyId}`;
   return `
 <!DOCTYPE html>
@@ -156,7 +167,7 @@ export function getSceneReadyEmailHtml(
         Your 3D Tour is Ready! 🎉
       </h1>
       <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #4b5563;">
-        Great news! The 3D tour for <strong>${propertyTitle}</strong> has been
+        Great news! The 3D tour for <strong>${safeTitle}</strong> has been
         generated and is ready to share with your clients.
       </p>
       <div style="margin: 24px 0; padding: 20px; background-color: #eff6ff; border-radius: 8px; border-left: 4px solid #3b82f6;">
@@ -183,6 +194,7 @@ export function getSceneReadyEmailHtml(
  * Generate HTML for the first property email.
  */
 export function getFirstPropertyEmailHtml(propertyTitle: string): string {
+  const safeTitle = escapeHtml(propertyTitle);
   return `
 <!DOCTYPE html>
 <html lang="en">
@@ -198,7 +210,7 @@ export function getFirstPropertyEmailHtml(propertyTitle: string): string {
         Your First Property is Set Up! 🏗️
       </h1>
       <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #4b5563;">
-        You've created <strong>${propertyTitle}</strong> — nice work!
+        You've created <strong>${safeTitle}</strong> — nice work!
         You're one step closer to creating an immersive 3D experience for your clients.
       </p>
       <div style="margin: 24px 0; padding: 20px; background-color: #fefce8; border-radius: 8px; border-left: 4px solid #eab308;">

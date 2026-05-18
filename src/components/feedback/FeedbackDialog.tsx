@@ -49,7 +49,10 @@ export function FeedbackDialog({
   propertyId,
   defaultType,
 }: FeedbackDialogProps) {
-  const [type, setType] = useState(defaultType ?? "general");
+  const [type, setType] = useState(() => {
+    const validTypes = ["bug", "feature", "general", "capture", "nps"];
+    return validTypes.includes(defaultType ?? "") ? defaultType! : "general";
+  });
   const [comment, setComment] = useState("");
   const [sentiment, setSentiment] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -170,6 +173,7 @@ export function FeedbackDialog({
               onChange={(e) => setComment(e.target.value)}
               rows={4}
               className="resize-none"
+              maxLength={5000}
             />
           </div>
 

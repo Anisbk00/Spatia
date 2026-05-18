@@ -117,8 +117,14 @@ export async function POST(request: NextRequest) {
 
   const errors: FieldErrors = {};
 
+  const VALID_PROPERTY_TYPES = ["apartment", "house", "condo", "commercial", "land", "villa", "office", "other"];
+
   if (!body.title?.trim()) {
     errors.title = "Property title is required";
+  }
+
+  if (body.property_type && !VALID_PROPERTY_TYPES.includes(body.property_type)) {
+    errors.property_type = `property_type must be one of: ${VALID_PROPERTY_TYPES.join(", ")}`;
   }
 
   if (body.price !== undefined && body.price !== null && body.price < 0) {

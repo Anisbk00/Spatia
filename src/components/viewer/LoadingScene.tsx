@@ -9,8 +9,12 @@ interface LoadingSceneProps {
 }
 
 function useIsMobile(): boolean {
-  // Subscribe to nothing — just read once on client
-  const subscribe = () => () => {};
+  // Subscribe to media query changes so the hook re-evaluates on resize/orientation change
+  const subscribe = (cb: () => void) => {
+    const mql = window.matchMedia("(max-width: 768px)");
+    mql.addEventListener("change", cb);
+    return () => mql.removeEventListener("change", cb);
+  };
   const getSnapshot = () => {
     if (typeof window === "undefined") return false;
     const isTouchDevice =

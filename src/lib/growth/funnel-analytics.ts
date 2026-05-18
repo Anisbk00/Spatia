@@ -26,10 +26,14 @@ import type { FunnelData, FunnelStep, RetentionData } from "@/lib/types";
 export async function getFunnelMetrics(
   supabase: SupabaseClient,
 ): Promise<FunnelData> {
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+
   // Step 1: Total users who signed up
   const { count: totalUsers } = await supabase
     .from("users")
-    .select("id", { count: "exact", head: true });
+    .select("id", { count: "exact", head: true })
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   const total = totalUsers ?? 0;
 
@@ -37,7 +41,9 @@ export async function getFunnelMetrics(
   const { data: onboardingEvents } = await supabase
     .from("events")
     .select("user_id")
-    .eq("event_type", "ONBOARDING_STARTED");
+    .eq("event_type", "ONBOARDING_STARTED")
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   const onboardingStartedCount = new Set(
     (onboardingEvents || []).map((e) => e.user_id),
@@ -47,7 +53,9 @@ export async function getFunnelMetrics(
   const { data: propertyEvents } = await supabase
     .from("events")
     .select("user_id")
-    .eq("event_type", "FIRST_PROPERTY_CREATED");
+    .eq("event_type", "FIRST_PROPERTY_CREATED")
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   const propertyCreatedCount = new Set(
     (propertyEvents || []).map((e) => e.user_id),
@@ -57,7 +65,9 @@ export async function getFunnelMetrics(
   const { data: captureEvents } = await supabase
     .from("events")
     .select("user_id")
-    .eq("event_type", "FIRST_CAPTURE_STARTED");
+    .eq("event_type", "FIRST_CAPTURE_STARTED")
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   const captureStartedCount = new Set(
     (captureEvents || []).map((e) => e.user_id),
@@ -67,7 +77,9 @@ export async function getFunnelMetrics(
   const { data: sceneEvents } = await supabase
     .from("events")
     .select("user_id")
-    .eq("event_type", "FIRST_SCENE_GENERATED");
+    .eq("event_type", "FIRST_SCENE_GENERATED")
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   const sceneGeneratedCount = new Set(
     (sceneEvents || []).map((e) => e.user_id),
@@ -77,7 +89,9 @@ export async function getFunnelMetrics(
   const { data: shareEvents } = await supabase
     .from("events")
     .select("user_id")
-    .eq("event_type", "FIRST_VIEW_SHARED");
+    .eq("event_type", "FIRST_VIEW_SHARED")
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   const viewSharedCount = new Set(
     (shareEvents || []).map((e) => e.user_id),
@@ -268,16 +282,22 @@ export async function getRetentionData(
 export async function getActivationRate(
   supabase: SupabaseClient,
 ): Promise<number> {
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+
   const { count: totalUsers } = await supabase
     .from("users")
-    .select("id", { count: "exact", head: true });
+    .select("id", { count: "exact", head: true })
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   if (!totalUsers || totalUsers === 0) return 0;
 
   const { data: activatedEvents } = await supabase
     .from("events")
     .select("user_id")
-    .eq("event_type", "FIRST_PROPERTY_CREATED");
+    .eq("event_type", "FIRST_PROPERTY_CREATED")
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   const uniqueActivatedUsers = new Set(
     (activatedEvents || []).map((e) => e.user_id),
@@ -378,16 +398,22 @@ export async function getCaptureCompletionRate(
 export async function getShareRate(
   supabase: SupabaseClient,
 ): Promise<number> {
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+
   const { count: totalProperties } = await supabase
     .from("properties")
-    .select("id", { count: "exact", head: true });
+    .select("id", { count: "exact", head: true })
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   if (!totalProperties || totalProperties === 0) return 0;
 
   const { data: shareEvents } = await supabase
     .from("events")
     .select("property_id")
-    .eq("event_type", "PROPERTY_SHARED");
+    .eq("event_type", "PROPERTY_SHARED")
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   const sharedPropertyIds = new Set(
     (shareEvents || [])
@@ -416,11 +442,15 @@ export async function getStuckUsers(
     Date.now() - hoursSinceSignup * 60 * 60 * 1000,
   ).toISOString();
 
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+
   // Get all users who signed up before the cutoff
   const { data: users } = await supabase
     .from("users")
     .select("id, email, created_at")
-    .lt("created_at", cutoffDate);
+    .lt("created_at", cutoffDate)
+    .gte("created_at", ninetyDaysAgo)
+    .limit(100_000);
 
   if (!users || users.length === 0) return [];
 

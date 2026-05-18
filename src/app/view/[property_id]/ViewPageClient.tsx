@@ -38,6 +38,7 @@ export function ViewPageClient({
   sceneStatus: initialSceneStatus,
   sharePath,
 }: ViewPageClientProps) {
+  const [shareUrl, setShareUrl] = useState(sharePath);
   const [modelUrl, setModelUrl] = useState(initialModelUrl);
   const [sceneStatus, setSceneStatus] = useState(initialSceneStatus);
   const [pollError, setPollError] = useState<string | null>(null);
@@ -54,6 +55,11 @@ export function ViewPageClient({
   const handleStateChange = useCallback((state: ViewerState) => {
     setViewerState(state);
   }, []);
+
+  // Resolve share URL on client to avoid hydration mismatch
+  useEffect(() => {
+    setShareUrl(`${window.location.origin}${sharePath}`);
+  }, [sharePath]);
 
   // Poll scene status when processing or queued
   useEffect(() => {
@@ -116,7 +122,7 @@ export function ViewPageClient({
         <header className="sticky top-0 z-50 border-b border-white/10 bg-black/80 backdrop-blur-md">
           <div className="mx-auto flex h-12 max-w-7xl items-center justify-between px-4">
             <div className="flex items-center gap-3">
-              <Link href={`/property/${propertyId}`} className="text-white/60 hover:text-white transition-colors">
+              <Link href={`/property/${propertyId}`} className="text-white/60 hover:text-white transition-colors" aria-label="Back to property details">
                 <ArrowLeft className="h-5 w-5" />
               </Link>
               <div className="flex items-center gap-2">
@@ -196,7 +202,7 @@ export function ViewPageClient({
       <ViewerControls
         viewerState={viewerState}
         propertyTitle={propertyTitle}
-        shareUrl={typeof window !== "undefined" ? `${window.location.origin}${sharePath}` : sharePath}
+        shareUrl={shareUrl}
       />
 
       {/* Loading overlay */}

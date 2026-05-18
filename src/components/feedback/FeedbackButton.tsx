@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { MessageSquare } from "lucide-react";
 import { FeedbackDialog } from "./FeedbackDialog";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,13 @@ export function FeedbackButton({
   className,
 }: FeedbackButtonProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [showPing, setShowPing] = useState(true);
+
+  // Show ping animation only for the first 3 seconds
+  useEffect(() => {
+    const timer = setTimeout(() => setShowPing(false), 3000);
+    return () => clearTimeout(timer);
+  }, []);
 
   if (hidden) return null;
 
@@ -37,8 +44,8 @@ export function FeedbackButton({
         )}
         aria-label="Send feedback"
       >
-        {/* Pulse ring animation */}
-        <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-25" />
+        {/* Pulse ring animation — only shows for first 3 seconds */}
+        {showPing && <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-25" />}
         <MessageSquare className="h-6 w-6 relative z-10" />
       </button>
 

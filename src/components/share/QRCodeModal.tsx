@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useRef, useEffect, useState, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -10,94 +10,12 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Copy, Check } from "lucide-react";
-import { useState } from "react";
-import { trackEvent, EVENT_TYPES } from "@/lib/event-tracking";
 
 interface QRCodeModalProps {
   propertyId: string;
   propertyTitle: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}
-
-/**
- * Generates a deterministic pseudo-random QR code pattern from a seed string.
- * Uses a simple hash to create a reproducible grid of "modules" (black/white squares).
- * The pattern includes the three required QR code finder patterns in the corners
- * for visual realism.
- */
-function useQRPattern(seed: string, size: number = 25) {
-  return useMemo(() => {
-    // Simple hash function to generate deterministic values from seed
-    const hash = (str: string, index: number): number => {
-      let h = 0;
-      const combined = str + index.toString();
-      for (let i = 0; i < combined.length; i++) {
-        h = (Math.imul(31, h) + combined.charCodeAt(i)) | 0;
-      }
-      return Math.abs(h);
-    };
-
-    const grid: boolean[][] = [];
-
-    // Initialize grid with seeded random values
-    for (let row = 0; row < size; row++) {
-      grid[row] = [];
-      for (let col = 0; col < size; col++) {
-        grid[row][col] = hash(seed, row * size + col) % 3 === 0;
-      }
-    }
-
-    // Draw finder pattern (7x7 with specific structure) at a position
-    const drawFinder = (startRow: number, startCol: number) => {
-      for (let r = 0; r < 7; r++) {
-        for (let c = 0; c < 7; c++) {
-          // Border is always filled
-          if (r === 0 || r === 6 || c === 0 || c === 6) {
-            grid[startRow + r][startCol + c] = true;
-          }
-          // Inner 3x3 is always filled
-          else if (r >= 2 && r <= 4 && c >= 2 && c <= 4) {
-            grid[startRow + r][startCol + c] = true;
-          }
-          // Between border and inner is always white
-          else {
-            grid[startRow + r][startCol + c] = false;
-          }
-        }
-      }
-
-      // Separator (white border around finder pattern)
-      for (let r = -1; r <= 7; r++) {
-        for (let c = -1; c <= 7; c++) {
-          const row = startRow + r;
-          const col = startCol + c;
-          if (row < 0 || row >= size || col < 0 || col >= size) continue;
-          if (r >= 0 && r <= 6 && c >= 0 && c <= 6) continue; // Inside finder, already handled
-          // Set separator to white
-          if (
-            (r === -1 || r === 7) && c >= -1 && c <= 7 ||
-            (c === -1 || c === 7) && r >= -1 && r <= 7
-          ) {
-            grid[row][col] = false;
-          }
-        }
-      }
-    };
-
-    // Draw three finder patterns in corners
-    drawFinder(0, 0); // Top-left
-    drawFinder(0, size - 7); // Top-right
-    drawFinder(size - 7, 0); // Bottom-left
-
-    // Timing patterns (alternating rows/columns between finders)
-    for (let i = 8; i < size - 8; i++) {
-      grid[6][i] = i % 2 === 0;
-      grid[i][6] = i % 2 === 0;
-    }
-
-    return grid;
-  }, [seed, size]);
 }
 
 export function QRCodeModal({
@@ -107,32 +25,35 @@ export function QRCodeModal({
   onOpenChange,
 }: QRCodeModalProps) {
   const [copied, setCopied] = useState(false);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (copiedTimeoutRef.current) {
+        clearTimeout(copiedTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const propertyUrl =
     typeof window !== "undefined"
       ? `${window.location.origin}/property/${propertyId}`
       : `/property/${propertyId}`;
 
-  const qrGrid = useQRPattern(propertyId, 25);
-  const moduleSize = 8; // px per QR module
-  const qrPixelSize = 25 * moduleSize;
+  // Generate a real, scannable QR code via a public API
+  const qrImageUrl = useMemo(
+    () =>
+      `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(propertyUrl)}`,
+    [propertyUrl],
+  );
 
   const handleCopyLink = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(propertyUrl);
       setCopied(true);
 
-      // Track events
-      trackEvent(EVENT_TYPES.SHARE_LINK_COPIED, {
-        property_id: propertyId,
-        method: "copy_link",
-      });
-      trackEvent(EVENT_TYPES.PROPERTY_SHARED, {
-        property_id: propertyId,
-        share_method: "link",
-      });
-
-      // Call share tracking API
+      // Call share tracking API (server-side tracking only)
       await fetch("/api/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -142,17 +63,35 @@ export function QRCodeModal({
         }),
       });
 
-      setTimeout(() => setCopied(false), 2000);
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       console.error("[QRCodeModal] Clipboard API failed, using fallback:", err);
       const textarea = document.createElement("textarea");
       textarea.value = propertyUrl;
       document.body.appendChild(textarea);
       textarea.select();
-      document.execCommand("copy");
+      const success = document.execCommand("copy");
       document.body.removeChild(textarea);
+
+      if (!success) {
+        return;
+      }
+
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+
+      // Call share tracking API (server-side tracking only)
+      await fetch("/api/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          property_id: propertyId,
+          share_method: "link",
+        }),
+      });
+
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
     }
   }, [propertyUrl, propertyId]);
 
@@ -160,15 +99,7 @@ export function QRCodeModal({
   const handleOpenChange = useCallback(
     (isOpen: boolean) => {
       if (isOpen) {
-        trackEvent(EVENT_TYPES.SHARE_QR_GENERATED, {
-          property_id: propertyId,
-        });
-        trackEvent(EVENT_TYPES.PROPERTY_SHARED, {
-          property_id: propertyId,
-          share_method: "qr",
-        });
-
-        // Call share tracking API
+        // Call share tracking API (server-side tracking only)
         fetch("/api/share", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -182,7 +113,7 @@ export function QRCodeModal({
       }
       onOpenChange(isOpen);
     },
-    [open, propertyId, onOpenChange]
+    [propertyId, onOpenChange],
   );
 
   return (
@@ -218,7 +149,7 @@ export function QRCodeModal({
         </DialogHeader>
 
         <div className="flex flex-col items-center gap-6 py-4">
-          {/* QR Code Visual */}
+          {/* QR Code Image — real, scannable QR code */}
           <div className="relative rounded-xl border border-emerald-100 bg-white p-4 shadow-sm">
             {/* Corner accents */}
             <div className="absolute top-2 left-2 h-5 w-5 border-t-2 border-l-2 border-emerald-400 rounded-tl-sm" />
@@ -226,38 +157,13 @@ export function QRCodeModal({
             <div className="absolute bottom-2 left-2 h-5 w-5 border-b-2 border-l-2 border-emerald-400 rounded-bl-sm" />
             <div className="absolute bottom-2 right-2 h-5 w-5 border-b-2 border-r-2 border-emerald-400 rounded-br-sm" />
 
-            {/* SVG QR Code */}
-            <svg
-              width={qrPixelSize}
-              height={qrPixelSize}
-              viewBox={`0 0 ${qrPixelSize} ${qrPixelSize}`}
+            <img
+              src={qrImageUrl}
+              alt={`QR code for ${propertyTitle}`}
+              width={200}
+              height={200}
               className="block"
-              shapeRendering="pixelated"
-            >
-              {/* Background */}
-              <rect
-                x={0}
-                y={0}
-                width={qrPixelSize}
-                height={qrPixelSize}
-                fill="white"
-              />
-              {/* Modules */}
-              {qrGrid.map((row, rowIndex) =>
-                row.map((isFilled, colIndex) =>
-                  isFilled ? (
-                    <rect
-                      key={`${rowIndex}-${colIndex}`}
-                      x={colIndex * moduleSize}
-                      y={rowIndex * moduleSize}
-                      width={moduleSize}
-                      height={moduleSize}
-                      fill="#1a1a2e"
-                    />
-                  ) : null
-                )
-              )}
-            </svg>
+            />
           </div>
 
           {/* Property URL */}
@@ -271,6 +177,7 @@ export function QRCodeModal({
             onClick={handleCopyLink}
             className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm"
             size="lg"
+            aria-label="Copy property link"
           >
             {copied ? (
               <>

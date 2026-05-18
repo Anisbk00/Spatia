@@ -32,6 +32,11 @@ const MAX_BATCH_SIZE = 50;
 const MAX_METADATA_SIZE = 32_768; // 32KB per event metadata
 const MAX_USER_AGENT_LENGTH = 256;
 
+// Per-user rate limiting (max 100 events/user/minute)
+const EVENTS_RATE_LIMIT = 100;
+const EVENTS_RATE_WINDOW = 60_000;
+const eventsRateMap = new Map<string, { count: number; resetAt: number }>();
+
 // ============================================
 // Validation
 // ============================================
@@ -139,18 +144,33 @@ function sanitizeEvent(
 // IP extraction
 // ============================================
 
+function isValidIpAddress(ip: string): boolean {
+  // IPv4
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+    const octets = ip.split('.').map(Number);
+    return octets.every(o => o >= 0 && o <= 255);
+  }
+  // IPv6 (simplified — covers common formats)
+  if (/^[0-9a-fA-F:]+$/.test(ip) && ip.includes(':')) {
+    // Reject obviously malformed inputs (too long or empty segments)
+    if (ip.length > 45 || /:::/.test(ip)) return false;
+    return true;
+  }
+  return false;
+}
+
 function extractIpAddress(request: NextRequest): string | null {
   const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) {
     const firstIp = forwardedFor.split(",")[0]?.trim();
-    if (firstIp) return firstIp;
+    if (firstIp && isValidIpAddress(firstIp)) return firstIp;
   }
 
   const realIp = request.headers.get("x-real-ip");
-  if (realIp) return realIp;
+  if (realIp && isValidIpAddress(realIp)) return realIp;
 
   const cfIp = request.headers.get("cf-connecting-ip");
-  if (cfIp) return cfIp;
+  if (cfIp && isValidIpAddress(cfIp)) return cfIp;
 
   return null;
 }
@@ -185,6 +205,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Per-user rate limiting check (before parsing body)
+  const now = Date.now();
+  const userKey = user.id;
+  const userLimit = eventsRateMap.get(userKey);
+  if (userLimit && now < userLimit.resetAt && userLimit.count >= EVENTS_RATE_LIMIT) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+
   // 2. Parse and validate request body
   let body: BatchEventRequest;
   try {
@@ -216,6 +244,13 @@ export async function POST(request: NextRequest) {
       { error: `Batch size exceeds maximum of ${MAX_BATCH_SIZE} events` },
       { status: 400 },
     );
+  }
+
+  // Update rate limit counter with actual event count
+  if (!userLimit || now >= userLimit.resetAt) {
+    eventsRateMap.set(userKey, { count: body.events.length, resetAt: now + EVENTS_RATE_WINDOW });
+  } else {
+    eventsRateMap.get(userKey)!.count += body.events.length;
   }
 
   // 3. Validate individual events

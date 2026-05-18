@@ -1,6 +1,9 @@
 import { notFound } from "next/navigation";
+import { cache } from "react";
+import { headers } from "next/headers";
 import type { Metadata } from "next";
-import { getPropertyWithScene, trackPropertyView } from "@/lib/supabase/property";
+import Link from "next/link";
+import { getPropertyWithScene, getPropertySceneAnyStatus, trackPropertyView } from "@/lib/supabase/property";
 import { PropertyHero } from "@/components/property/PropertyHero";
 import { PropertyGallery } from "@/components/property/PropertyGallery";
 import { PropertyShareSection } from "@/components/share/PropertyShareSection";
@@ -9,13 +12,16 @@ import { Rotate3d, ArrowLeft } from "lucide-react";
 import { SpatiaLogo } from "@/components/SpatiaLogo";
 import { Button } from "@/components/ui/button";
 
+const getCachedPropertyWithScene = cache(getPropertyWithScene);
+const getCachedPropertySceneAnyStatus = cache(getPropertySceneAnyStatus);
+
 interface PropertyPageProps {
   params: Promise<{ property_id: string }>;
 }
 
 export async function generateMetadata({ params }: PropertyPageProps): Promise<Metadata> {
   const { property_id } = await params;
-  const data = await getPropertyWithScene(property_id);
+  const data = await getCachedPropertyWithScene(property_id);
 
   if (!data) {
     return {
@@ -31,6 +37,8 @@ export async function generateMetadata({ params }: PropertyPageProps): Promise<M
   return {
     title,
     description,
+    metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://spatia.app"),
+    alternates: { canonical: `/property/${property_id}` },
     openGraph: {
       title,
       description,
@@ -47,18 +55,34 @@ export async function generateMetadata({ params }: PropertyPageProps): Promise<M
   };
 }
 
+/** Simple bot detection from user-agent */
+function isBot(ua: string | null): boolean {
+  if (!ua) return true; // No UA = assume bot (e.g. health checks)
+  const lower = ua.toLowerCase();
+  return /bot|crawler|spider|slurp|mediapartners|preview|fetch|curl|wget/i.test(lower);
+}
+
 export default async function PropertyPage({ params }: PropertyPageProps) {
   const { property_id } = await params;
-  const data = await getPropertyWithScene(property_id);
+  const data = await getCachedPropertyWithScene(property_id);
 
   if (!data) {
     notFound();
   }
 
-  // Track the view (fire-and-forget, don't block rendering)
-  trackPropertyView(property_id).catch(() => {});
+  // Track the view — skip bots/crawlers to avoid inflating analytics
+  const headersList = await headers();
+  const ua = headersList.get("user-agent");
+  if (!isBot(ua)) {
+    trackPropertyView(property_id).catch(() => {});
+  }
+
+  // Fetch scene with any status for showing processing/queued/failed states
+  const sceneAnyStatus = await getCachedPropertySceneAnyStatus(property_id);
 
   const { scene, media, ...property } = data;
+  // Use the any-status scene for status checks, ready scene for model_url
+  const effectiveScene = sceneAnyStatus || scene;
   const hasScene = scene?.status === "ready" && !!scene.model_url;
 
   return (
@@ -68,9 +92,9 @@ export default async function PropertyPage({ params }: PropertyPageProps) {
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="icon" asChild className="shrink-0">
-              <a href="/explore" aria-label="Back to explore">
+              <Link href="/explore" aria-label="Back to explore">
                 <ArrowLeft className="h-4 w-4" />
-              </a>
+              </Link>
             </Button>
             <div className="flex items-center gap-2">
               <SpatiaLogo size="sm" />
@@ -83,10 +107,10 @@ export default async function PropertyPage({ params }: PropertyPageProps) {
               size="sm"
               className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5 rounded-full"
             >
-              <a href={`/view/${property_id}`}>
+              <Link href={`/view/${property_id}`}>
                 <Rotate3d className="h-4 w-4" />
                 View in 3D
-              </a>
+              </Link>
             </Button>
           )}
         </div>
@@ -133,16 +157,16 @@ export default async function PropertyPage({ params }: PropertyPageProps) {
                   size="lg"
                   className="rounded-full bg-white text-emerald-700 hover:bg-emerald-50 shrink-0 shadow-lg px-8"
                 >
-                  <a href={`/view/${property_id}`}>
+                  <Link href={`/view/${property_id}`}>
                     Start 3D Tour
-                  </a>
+                  </Link>
                 </Button>
               </div>
             </section>
           )}
 
           {/* Scene not ready notice */}
-          {!hasScene && property.status === "processing" && (
+          {!hasScene && effectiveScene?.status === "processing" && (
             <section className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center">
               <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-amber-100">
                 <Rotate3d className="h-6 w-6 text-amber-600 animate-spin" style={{ animationDuration: "3s" }} />
@@ -155,7 +179,7 @@ export default async function PropertyPage({ params }: PropertyPageProps) {
           )}
 
           {/* Scene failed notice */}
-          {!hasScene && scene?.status === "failed" && (
+          {!hasScene && effectiveScene?.status === "failed" && (
             <section className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center">
               <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
                 <Rotate3d className="h-6 w-6 text-red-500" />

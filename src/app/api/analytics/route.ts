@@ -41,6 +41,8 @@ const ALLOWED_ANONYMOUS_TYPES = [
 ] as const;
 
 // Rate limiting (in-memory, per-IP)
+// NOTE: In-memory rate limiting is only effective for single-instance deployments.
+// TODO: For distributed/multi-server deployments, use Redis or a shared rate-limit store.
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_MAX = 30; // 30 requests per window
 const RATE_LIMIT_WINDOW = 60_000; // 1 minute
@@ -88,7 +90,7 @@ function checkRateLimit(ip: string): boolean {
 
 // Clean up expired entries periodically
 if (typeof globalThis !== "undefined") {
-  setInterval(() => {
+  const cleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [key, entry] of rateLimitMap) {
       if (now > entry.resetAt) {
@@ -96,6 +98,11 @@ if (typeof globalThis !== "undefined") {
       }
     }
   }, 120_000);
+
+  // Don't prevent the Node.js process from exiting
+  if (typeof cleanupTimer.unref === "function") {
+    cleanupTimer.unref();
+  }
 }
 
 // ============================================

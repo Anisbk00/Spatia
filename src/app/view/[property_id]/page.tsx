@@ -1,7 +1,11 @@
 import { notFound } from "next/navigation";
+import { cache } from "react";
 import type { Metadata } from "next";
-import { getPropertyWithScene } from "@/lib/supabase/property";
+import { getPropertyWithScene, getPropertySceneAnyStatus } from "@/lib/supabase/property";
 import { ViewPageClient } from "./ViewPageClient";
+
+const getCachedPropertyWithScene = cache(getPropertyWithScene);
+const getCachedPropertySceneAnyStatus = cache(getPropertySceneAnyStatus);
 
 interface ViewPageProps {
   params: Promise<{ property_id: string }>;
@@ -9,7 +13,7 @@ interface ViewPageProps {
 
 export async function generateMetadata({ params }: ViewPageProps): Promise<Metadata> {
   const { property_id } = await params;
-  const data = await getPropertyWithScene(property_id);
+  const data = await getCachedPropertyWithScene(property_id);
 
   if (!data) {
     return {
@@ -25,6 +29,8 @@ export async function generateMetadata({ params }: ViewPageProps): Promise<Metad
   return {
     title,
     description,
+    metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://spatia.app"),
+    alternates: { canonical: `/property/${property_id}` },
     openGraph: {
       title,
       description,
@@ -43,11 +49,14 @@ export async function generateMetadata({ params }: ViewPageProps): Promise<Metad
 
 export default async function ViewPage({ params }: ViewPageProps) {
   const { property_id } = await params;
-  const data = await getPropertyWithScene(property_id);
+  const data = await getCachedPropertyWithScene(property_id);
 
   if (!data) {
     notFound();
   }
+
+  // Fetch scene with any status for showing processing/queued/failed states
+  const sceneAnyStatus = await getCachedPropertySceneAnyStatus(property_id);
 
   const { scene, ...property } = data;
   const modelUrl = scene?.model_url || null;
@@ -61,7 +70,7 @@ export default async function ViewPage({ params }: ViewPageProps) {
       propertyPrice={property.price}
       propertyCurrency={property.currency}
       modelUrl={modelUrl}
-      sceneStatus={scene?.status || null}
+      sceneStatus={sceneAnyStatus?.status || scene?.status || null}
       sharePath={sharePath}
     />
   );

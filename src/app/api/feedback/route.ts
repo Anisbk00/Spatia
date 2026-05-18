@@ -25,6 +25,12 @@ interface FeedbackRequest {
 
 const VALID_FEEDBACK_TYPES: FeedbackType[] = ["bug", "feature", "nps", "capture", "general"];
 const VALID_SENTIMENTS: FeedbackSentiment[] = ["positive", "neutral", "negative"];
+const MAX_COMMENT_LENGTH = 5000;
+
+// Per-user rate limiting (max 10 submissions/user/hour)
+const FEEDBACK_RATE_LIMIT = 10;
+const FEEDBACK_RATE_WINDOW = 3_600_000;
+const feedbackRateMap = new Map<string, { count: number; resetAt: number }>();
 
 // ============================================
 // POST — Submit feedback
@@ -47,6 +53,18 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Per-user rate limiting
+  const now = Date.now();
+  const feedbackUserKey = user.id;
+  const feedbackLimit = feedbackRateMap.get(feedbackUserKey);
+  if (feedbackLimit && now < feedbackLimit.resetAt && feedbackLimit.count >= FEEDBACK_RATE_LIMIT) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+  if (!feedbackLimit || now >= feedbackLimit.resetAt) {
+    feedbackRateMap.set(feedbackUserKey, { count: 0, resetAt: now + FEEDBACK_RATE_WINDOW });
+  }
+  feedbackRateMap.get(feedbackUserKey)!.count += 1;
 
   const adminClient = createAdminClient();
   const dataClient = adminClient || supabase;
@@ -93,6 +111,14 @@ export async function POST(request: NextRequest) {
   if (body.type === "nps" && body.rating === undefined) {
     return NextResponse.json(
       { error: "rating is required for NPS feedback" },
+      { status: 400 },
+    );
+  }
+
+  // Validate comment length
+  if (body.comment && typeof body.comment === "string" && body.comment.length > MAX_COMMENT_LENGTH) {
+    return NextResponse.json(
+      { error: "Comment too long" },
       { status: 400 },
     );
   }

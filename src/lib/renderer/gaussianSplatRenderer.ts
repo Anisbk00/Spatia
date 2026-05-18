@@ -178,7 +178,11 @@ void main() {
 `;
 
 const FRAGMENT_SHADER_SRC = `#version 300 es
+#ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
+#else
+precision mediump float;
+#endif
 
 in vec3  v_color;
 in vec2  v_quadCoord;   // [-1, 1]
@@ -643,6 +647,18 @@ export class GaussianSplatRenderer {
   private depthKeys: Float32Array | null    = null;
   private instanceBuf: Float32Array | null  = null;
 
+  // Pre-allocated sort buffers (reused every frame — avoids ~48MB/frame GC)
+  private _sortKeys: Uint32Array | null   = null;
+  private _sortTmpIdx: Uint32Array | null = null;
+  private _sortTmpKey: Uint32Array | null = null;
+  private _sortDv: DataView | null        = null;
+  private _sortBins: Uint32Array          = new Uint32Array(256);
+
+  // Context loss handling
+  private _contextLost = false;
+  private _contextLostHandler: ((e: Event) => void) | null = null;
+  private _contextRestoredHandler: (() => void) | null = null;
+
   // Quality
   private quality: RenderQuality = "high";
   private maxSplatCount = MAX_SPLATS_HIGH;
@@ -702,6 +718,11 @@ export class GaussianSplatRenderer {
   // -----------------------------------------------------------------------
 
   init(): void {
+    if (this.initialized) {
+      console.warn("[GaussianSplatRenderer] Already initialized. Call dispose() first.");
+      return;
+    }
+
     const gl = this.canvas.getContext("webgl2", {
       alpha: false,
       antialias: false,
@@ -724,7 +745,8 @@ export class GaussianSplatRenderer {
     const fs = this._compile(gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SRC);
     if (!vs || !fs) throw new Error("Failed to compile Gaussian Splat shaders.");
 
-    const prog = gl.createProgram()!;
+    const prog = gl.createProgram();
+    if (!prog) throw new Error("Failed to create WebGL program — GPU may be out of memory.");
     gl.attachShader(prog, vs);
     gl.attachShader(prog, fs);
     gl.linkProgram(prog);
@@ -792,6 +814,21 @@ export class GaussianSplatRenderer {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
+    // WebGL context loss handling
+    this._contextLostHandler = (e: Event) => {
+      e.preventDefault();
+      this.running = false;
+      this._contextLost = true;
+    };
+    this._contextRestoredHandler = () => {
+      this._contextLost = false;
+      this.dispose();
+      this.init();
+      this._startRenderLoop();
+    };
+    this.canvas.addEventListener("webglcontextlost", this._contextLostHandler);
+    this.canvas.addEventListener("webglcontextrestored", this._contextRestoredHandler);
+
     // Attach orbit camera controls
     this.orbitCam.attach(this.canvas);
 
@@ -821,6 +858,12 @@ export class GaussianSplatRenderer {
     this.depthKeys     = new Float32Array(count);
     for (let i = 0; i < count; i++) this.sortedIndices[i] = i;
 
+    // Pre-allocate sort temporary buffers (reused every frame)
+    this._sortKeys   = new Uint32Array(count);
+    this._sortTmpIdx = new Uint32Array(count);
+    this._sortTmpKey = new Uint32Array(count);
+    this._sortDv     = null; // created lazily with correct byteOffset
+
     // Initial sort + upload
     this._sortAndRebuild();
 
@@ -849,6 +892,13 @@ export class GaussianSplatRenderer {
         this.sortedIndices = new Uint32Array(newCount);
         this.depthKeys     = new Float32Array(newCount);
         for (let i = 0; i < newCount; i++) this.sortedIndices[i] = i;
+
+        // Re-allocate sort temporary buffers for new count
+        this._sortKeys   = new Uint32Array(newCount);
+        this._sortTmpIdx = new Uint32Array(newCount);
+        this._sortTmpKey = new Uint32Array(newCount);
+        this._sortDv     = null;
+
         this._sortAndRebuild();
       }
     }
@@ -859,7 +909,7 @@ export class GaussianSplatRenderer {
   // -----------------------------------------------------------------------
 
   render(): void {
-    if (!this.gl || !this.initialized || !this.program) return;
+    if (this._contextLost || !this.gl || !this.initialized || !this.program) return;
     const gl = this.gl;
 
     // Camera interpolation
@@ -936,6 +986,16 @@ export class GaussianSplatRenderer {
   dispose(): void {
     this.stopLoop();
 
+    // Remove context loss listeners
+    if (this._contextLostHandler) {
+      this.canvas.removeEventListener("webglcontextlost", this._contextLostHandler);
+      this._contextLostHandler = null;
+    }
+    if (this._contextRestoredHandler) {
+      this.canvas.removeEventListener("webglcontextrestored", this._contextRestoredHandler);
+      this._contextRestoredHandler = null;
+    }
+
     if (this.resizeObs) { this.resizeObs.disconnect(); this.resizeObs = null; }
     this.orbitCam.detach();
 
@@ -954,6 +1014,12 @@ export class GaussianSplatRenderer {
     this.depthKeys      = null;
     this.instanceBuf    = null;
     this.renderedCount  = 0;
+
+    // Release sort buffers
+    this._sortKeys   = null;
+    this._sortTmpIdx = null;
+    this._sortTmpKey = null;
+    this._sortDv     = null;
   }
 
   // =======================================================================
@@ -985,14 +1051,64 @@ export class GaussianSplatRenderer {
       this.sortedIndices[i] = i;
     }
 
-    // Sort ascending (nearest first), then we iterate back-to-front
-    radixSortAsc(this.sortedIndices, this.depthKeys, count);
+    // In-place radix sort using pre-allocated buffers
+    this._radixSortInPlace(count);
 
     // Reverse for painter's algorithm (draw far splats first)
     this.sortedIndices.reverse();
 
     // Build the instance buffer in the sorted order
     this._fillInstanceBuffer(count);
+  }
+
+  /**
+   * In-place 4-pass LSB radix sort using pre-allocated class buffers.
+   * Avoids allocating ~48MB of temporary typed arrays every frame.
+   */
+  private _radixSortInPlace(count: number): void {
+    const uintKeys  = this._sortKeys!;
+    const tmpIdx    = this._sortTmpIdx!;
+    const tmpKey    = this._sortTmpKey!;
+    const indices   = this.sortedIndices!;
+    const depthKeys = this.depthKeys!;
+    const bins      = this._sortBins;
+
+    // Lazily create DataView with correct byteOffset
+    if (!this._sortDv) {
+      this._sortDv = new DataView(
+        depthKeys.buffer,
+        depthKeys.byteOffset,
+        count * 4,
+      );
+    }
+    const dv = this._sortDv;
+
+    // Convert IEEE-754 floats to monotonic uint32 for ascending sort
+    for (let i = 0; i < count; i++) {
+      let k = dv.getUint32(i * 4, true); // little-endian
+      if (k & 0x80000000) { k = ~k; } else { k ^= 0x80000000; }
+      uintKeys[i] = k;
+    }
+
+    // 4-pass radix sort (8 bits per pass)
+    for (let shift = 0; shift < 32; shift += 8) {
+      bins.fill(0);
+
+      for (let i = 0; i < count; i++) bins[(uintKeys[i] >>> shift) & 0xff]++;
+
+      let total = 0;
+      for (let i = 0; i < 256; i++) { const c = bins[i]; bins[i] = total; total += c; }
+
+      for (let i = 0; i < count; i++) {
+        const b = (uintKeys[i] >>> shift) & 0xff;
+        const dst = bins[b]++;
+        tmpIdx[dst] = indices[i];
+        tmpKey[dst] = uintKeys[i];
+      }
+
+      indices.set(tmpIdx.subarray(0, count));
+      uintKeys.set(tmpKey.subarray(0, count));
+    }
   }
 
   /**
@@ -1071,9 +1187,23 @@ export class GaussianSplatRenderer {
     return sh;
   }
 
+  /** Restart the render loop (used after context restore) */
+  private _startRenderLoop(): void {
+    if (this.running) return;
+    this.running      = true;
+    this.lastFrameTs  = performance.now();
+    this.frameCount   = 0;
+    this.fpsAccum     = 0;
+    this.rafId = requestAnimationFrame(this._loop);
+  }
+
   /** requestAnimationFrame callback */
   private _loop = (now: number): void => {
     if (!this.running) return;
+    if (this._contextLost) {
+      this.rafId = requestAnimationFrame(this._loop);
+      return;
+    }
 
     const dt = now - this.lastFrameTs;
     this.lastFrameTs = now;

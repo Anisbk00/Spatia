@@ -73,7 +73,7 @@ export function DashboardTopbar({ user, organization, orgRole }: DashboardTopbar
         .join("")
         .toUpperCase()
         .slice(0, 2)
-    : user.email[0].toUpperCase();
+    : (user.email || "?")[0].toUpperCase();
 
   const statusColor = {
     connected: "bg-emerald-500",

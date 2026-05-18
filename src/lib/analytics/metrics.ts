@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/server";
 import type { JobType, JobStatus } from "@/lib/types";
 
 // ============================================
@@ -123,7 +123,7 @@ export class MetricsAggregator {
    * Get upload metrics for an organization
    */
   async getUploadMetrics(orgId: string, period: Period = "month"): Promise<UploadMetrics> {
-    const supabase = await createClient();
+    const supabase = createAdminClient();
     const defaults: UploadMetrics = { total: 0, successRate: 0, avgDuration: 0, failureRate: 0 };
     if (!supabase) return defaults;
 
@@ -161,7 +161,7 @@ export class MetricsAggregator {
    * Get processing metrics for an organization
    */
   async getProcessingMetrics(orgId: string, period: Period = "month"): Promise<ProcessingMetrics> {
-    const supabase = await createClient();
+    const supabase = createAdminClient();
     const defaults: ProcessingMetrics = {
       totalJobs: 0,
       successRate: 0,
@@ -249,7 +249,7 @@ export class MetricsAggregator {
    * Get capture metrics for an organization
    */
   async getCaptureMetrics(orgId: string, period: Period = "month"): Promise<CaptureMetrics> {
-    const supabase = await createClient();
+    const supabase = createAdminClient();
     const defaults: CaptureMetrics = {
       totalSessions: 0,
       avgImagesPerSession: 0,
@@ -292,7 +292,7 @@ export class MetricsAggregator {
    * Get viewer metrics for an organization
    */
   async getViewerMetrics(orgId: string, period: Period = "month"): Promise<ViewerMetrics> {
-    const supabase = await createClient();
+    const supabase = createAdminClient();
     const defaults: ViewerMetrics = {
       totalViews: 0,
       avgEngagementTime: 0,
@@ -365,7 +365,7 @@ export class MetricsAggregator {
    * Get system health overview
    */
   async getSystemHealth(orgId: string): Promise<SystemHealth> {
-    const supabase = await createClient();
+    const supabase = createAdminClient();
     const defaults: SystemHealth = {
       stuckJobs: 0,
       orphanSessions: 0,

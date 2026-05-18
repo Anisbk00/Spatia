@@ -105,6 +105,9 @@ export class EventTracker {
   private flushIntervalId: ReturnType<typeof setInterval> | null = null;
   private isFlushing = false;
 
+  // Deduplication map: key → timestamp
+  private _recentEvents = new Map<string, number>();
+
   // Tracking context
   private userId: string | null = null;
   private orgId: string | null = null;
@@ -142,6 +145,20 @@ export class EventTracker {
     if (typeof window !== "undefined") {
       window.addEventListener("online", this._boundOnline);
       window.addEventListener("beforeunload", this._boundBeforeUnload);
+
+      // Fix M4: Use sendBeacon on beforeunload for reliable final flush
+      window.addEventListener("beforeunload", () => {
+        if (this.buffer.length > 0) {
+          try {
+            navigator.sendBeacon(
+              "/api/events",
+              JSON.stringify({ events: this.buffer }),
+            );
+          } catch {
+            // sendBeacon can fail in some contexts (e.g., data too large) — ignore
+          }
+        }
+      });
     }
   }
 
@@ -199,6 +216,20 @@ export class EventTracker {
     propertyId?: string,
     sceneId?: string,
   ): void {
+    // Fix M10: Deduplication — skip duplicate events within 5 seconds
+    const dedupKey = `${eventType}:${JSON.stringify(metadata || {})}`;
+    const now = Date.now();
+    if (this._recentEvents.has(dedupKey) && now - this._recentEvents.get(dedupKey)! < 5000) {
+      return; // Skip duplicate within 5 seconds
+    }
+    this._recentEvents.set(dedupKey, now);
+    // Clean old entries periodically to prevent memory leaks
+    if (this._recentEvents.size > 1000) {
+      for (const [k, t] of this._recentEvents) {
+        if (now - t > 10000) this._recentEvents.delete(k);
+      }
+    }
+
     const event: BufferedEvent = {
       event_type: eventType,
       metadata,

@@ -30,6 +30,10 @@ export function getCorrelationId(): string | null {
 
 /**
  * Clear the correlation ID.
+ *
+ * IMPORTANT: Must be called in finally blocks or request lifecycle cleanup
+ * to prevent correlation ID leaks across requests in serverless/edge
+ * environments where the module-level variable persists between invocations.
  */
 export function clearCorrelationId(): void {
   _correlationId = null;
@@ -105,12 +109,10 @@ export const logger = {
   },
 
   debug(context: LogContext, message: string, ...args: unknown[]): void {
-    if (process.env.NODE_ENV === "development") {
-      if (process.env.NODE_ENV === "production") {
-        console.debug(JSON.stringify(buildStructuredEntry("debug", context, message, args)));
-      } else {
-        console.debug(formatMessage(context, message), ...args);
-      }
+    if (process.env.NODE_ENV === "production") {
+      console.debug(JSON.stringify(buildStructuredEntry("debug", context, message, args)));
+    } else {
+      console.debug(formatMessage(context, message), ...args);
     }
   },
 };

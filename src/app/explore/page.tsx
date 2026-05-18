@@ -1,8 +1,16 @@
+import type { Metadata } from "next";
 import type { User } from "@supabase/supabase-js";
 import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { getPublicProperties } from "@/lib/supabase/property";
 import type { Property } from "@/lib/types";
 import { ExploreContent } from "./ExploreContent";
+
+export const metadata: Metadata = {
+  title: "Explore Properties — Spatia",
+  description: "Browse immersive 3D property walkthroughs on Spatia.",
+};
+
+export const dynamic = 'force-dynamic';
 
 export default async function ExplorePage() {
   let supabase;
@@ -28,7 +36,6 @@ export default async function ExplorePage() {
     if (user) {
       try {
         // Use admin client to bypass RLS for profile reads
-        const adminClient = createAdminClient();
         const readClient = adminClient || supabase;
         const { data, error } = await readClient
           .from("users")
@@ -45,6 +52,9 @@ export default async function ExplorePage() {
     }
   }
 
+  // Create admin client once for remaining queries
+  const adminClient = createAdminClient();
+
   // Fetch real public properties with scene data
   let properties: Property[] = [];
   try {
@@ -57,8 +67,6 @@ export default async function ExplorePage() {
   const propertiesWithScene: Record<string, boolean> = {};
   if (properties.length > 0) {
     try {
-      // Use admin client to bypass RLS for scene reads
-      const adminClient = createAdminClient();
       const readClient = adminClient || supabase;
       if (readClient) {
         const propertyIds = properties.map((p) => p.id);

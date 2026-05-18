@@ -121,11 +121,27 @@ export async function getSignedStorageUrl(
  *
  * Expected path format: {org_id}/{resource_type}/{resource_id}/{filename}
  * or: uploads/{org_id}/{session_id}/{filename}
+ *
+ * SECURITY NOTE: This function trusts the org_id extracted from the caller-provided
+ * storage path. A more secure approach would validate the path against a database
+ * lookup (e.g., verify the storage_path exists in upload_operations or media tables
+ * and belongs to the requesting user's org). For now, we add path format validation
+ * to prevent path traversal attacks.
+ *
+ * TODO: Add database-backed path validation to ensure the storage path is legitimate.
  */
 export async function validateStorageAccess(
   userId: string,
   storagePath: string
 ): Promise<boolean> {
+  // Path format validation: reject paths with null bytes, double dots, or absolute paths
+  if (!storagePath ||
+      storagePath.includes('\0') ||
+      storagePath.includes('..') ||
+      storagePath.startsWith('/')) {
+    return false;
+  }
+
   const supabase = await createClient();
   if (!supabase) return false;
 

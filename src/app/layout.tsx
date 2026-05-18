@@ -103,11 +103,6 @@ export default async function RootLayout({
       priceCurrency: "USD",
       description: "Free tier available",
     },
-    aggregateRating: {
-      "@type": "AggregateRating",
-      ratingValue: "4.9",
-      reviewCount: "250",
-    },
   };
 
   return (

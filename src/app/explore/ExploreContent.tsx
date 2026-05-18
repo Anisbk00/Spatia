@@ -1,6 +1,8 @@
 "use client";
 
 import { useTranslations } from "next-intl";
+import Image from "next/image";
+import Link from "next/link";
 import {
   Card,
   CardContent,
@@ -31,7 +33,7 @@ export function ExploreContent({
   const tp = useTranslations("property");
 
   const formatPrice = (price: number | null, currency: string) => {
-    if (!price) return null;
+    if (price == null) return null;
     return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: currency || "USD",
@@ -64,13 +66,13 @@ export function ExploreContent({
             {user ? (
               <>
                 <Button variant="ghost" size="sm" asChild>
-                  <a href="/dashboard">{tn("dashboard")}</a>
+                  <Link href="/dashboard">{tn("dashboard")}</Link>
                 </Button>
                 <Button variant="ghost" size="sm" asChild>
-                  <a href="/properties/new">
+                  <Link href="/properties/new">
                     <Plus className="mr-1 h-4 w-4" />
                     {tn("newProperty")}
-                  </a>
+                  </Link>
                 </Button>
                 <form action={signOutAction}>
                   <Button
@@ -85,7 +87,7 @@ export function ExploreContent({
               </>
             ) : (
               <Button variant="outline" size="sm" asChild>
-                <a href="/auth/login">{t("signIn")}</a>
+                <Link href="/auth/login">{t("signIn")}</Link>
               </Button>
             )}
           </div>
@@ -128,10 +130,10 @@ export function ExploreContent({
                   </p>
                   {user && (
                     <Button asChild className="mt-6 bg-emerald-600 hover:bg-emerald-700 text-white gap-2">
-                      <a href="/properties/new">
+                      <Link href="/properties/new">
                         <Plus className="h-4 w-4" />
                         {t("createFirst")}
-                      </a>
+                      </Link>
                     </Button>
                   )}
                 </CardContent>
@@ -141,15 +143,17 @@ export function ExploreContent({
                 {properties.map((property: Property) => {
                   const has3D = propertiesWithScene[property.id] === true;
                   return (
-                    <a key={property.id} href={`/property/${property.id}`} className="block">
+                    <Link key={property.id} href={`/property/${property.id}`} className="block">
                       <Card className="group cursor-pointer border-0 shadow-md transition-shadow hover:shadow-lg h-full">
                         <CardContent className="p-0">
                           <div className="relative h-40 overflow-hidden rounded-t-xl">
                             {property.cover_image_url ? (
-                              <img
+                              <Image
                                 src={property.cover_image_url}
                                 alt={property.title}
-                                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                                fill
+                                className="object-cover transition-transform duration-300 group-hover:scale-105"
+                                sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
                               />
                             ) : (
                               <div className="flex h-full items-center justify-center bg-gradient-to-br from-emerald-100 to-emerald-50">
@@ -189,7 +193,7 @@ export function ExploreContent({
                           </div>
                         </CardContent>
                       </Card>
-                    </a>
+                    </Link>
                   );
                 })}
               </div>

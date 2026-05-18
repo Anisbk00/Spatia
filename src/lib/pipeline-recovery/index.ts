@@ -233,21 +233,31 @@ export class OrphanDetector {
 
     if (!uploads) return [];
 
+    // Batch-fetch storage_path for all uploads to avoid N+1 queries
+    const uploadIds = uploads.map((u) => u.id);
+    const { data: uploadDetails } = await supabase
+      .from("upload_operations")
+      .select("id, storage_path")
+      .in("id", uploadIds);
+
+    const pathMap = new Map(
+      (uploadDetails || []).map((d: { id: string; storage_path: string }) => [
+        d.id,
+        d.storage_path,
+      ]),
+    );
+
     const missing: MissingMediaUpload[] = [];
 
     for (const upload of uploads) {
       // Double-check: is there a media record for this session with matching storage path?
-      const { data: uploadDetail } = await supabase
-        .from("upload_operations")
-        .select("storage_path")
-        .eq("id", upload.id)
-        .single();
+      const storagePath = pathMap.get(upload.id);
 
-      if (uploadDetail?.storage_path) {
+      if (storagePath) {
         const { count } = await supabase
           .from("media")
           .select("id", { count: "exact", head: true })
-          .eq("url", uploadDetail.storage_path);
+          .eq("url", storagePath);
 
         if (count === 0) {
           missing.push({

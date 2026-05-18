@@ -231,6 +231,7 @@ export function NPSPrompt({ propertyId, onClose }: NPSPromptProps) {
               onChange={(e) => setComment(e.target.value)}
               rows={3}
               className="resize-none"
+              maxLength={2000}
             />
           </div>
         </div>

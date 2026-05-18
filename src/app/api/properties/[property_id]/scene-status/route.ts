@@ -20,6 +20,11 @@ export async function GET(
     return NextResponse.json({ error: "Property not found" }, { status: 404 });
   }
 
+  // Defense-in-depth: ensure we never leak unpublished property data
+  if (data.status !== "ready") {
+    return NextResponse.json({ error: "Property not found" }, { status: 404 });
+  }
+
   return NextResponse.json({
     property_id: data.id,
     status: data.status,

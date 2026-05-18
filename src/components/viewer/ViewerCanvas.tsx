@@ -37,6 +37,7 @@ export function ViewerCanvas({ modelUrl, onStateChange }: ViewerCanvasProps) {
     if (!canvas) return;
 
     let disposed = false;
+    const abortController = new AbortController();
 
     const initAndLoad = async () => {
       let renderer: GaussianSplatRenderer;
@@ -80,7 +81,7 @@ export function ViewerCanvas({ modelUrl, onStateChange }: ViewerCanvasProps) {
       try {
         const splatData = await loadSceneProgressive(modelUrl, (loaded, total) => {
           updateState({ loadProgress: Math.round((loaded / total) * 100) });
-        });
+        }, abortController.signal);
 
         if (disposed) return;
 
@@ -93,6 +94,7 @@ export function ViewerCanvas({ modelUrl, onStateChange }: ViewerCanvasProps) {
           quality: "high",
         });
       } catch (err) {
+        if ((err as DOMException).name === "AbortError") return;
         console.error("Failed to load 3D scene:", err);
         if (disposed) return;
         updateState({
@@ -107,6 +109,7 @@ export function ViewerCanvas({ modelUrl, onStateChange }: ViewerCanvasProps) {
 
     return () => {
       disposed = true;
+      abortController.abort();
       if (rendererRef.current) {
         rendererRef.current.dispose();
         rendererRef.current = null;
@@ -114,33 +117,22 @@ export function ViewerCanvas({ modelUrl, onStateChange }: ViewerCanvasProps) {
     };
   }, [modelUrl, updateState]);
 
-  // Expose quality toggle to parent via ref
+  // Expose quality toggle and camera reset via custom events
+  // Always attach listeners (rendererRef may not be ready yet — read inside handler)
   useEffect(() => {
-    const renderer = rendererRef.current;
-    if (!renderer) return;
-
-    // Set up a custom event listener for quality changes
     const handleQualityChange = (e: CustomEvent) => {
-      const quality = e.detail as RenderQuality;
-      renderer.setQuality(quality);
-      updateState({ quality });
+      rendererRef.current?.setQuality(e.detail as RenderQuality);
+      updateState({ quality: e.detail as RenderQuality });
     };
-
-    window.addEventListener("viewer-quality-change" as string, handleQualityChange as EventListener);
-    return () => {
-      window.removeEventListener("viewer-quality-change" as string, handleQualityChange as EventListener);
-    };
-  }, [updateState]);
-
-  // Expose camera reset to parent via ref
-  useEffect(() => {
     const handleResetCamera = () => {
       rendererRef.current?.resetCamera();
     };
 
-    window.addEventListener("viewer-reset-camera" as string, handleResetCamera);
+    window.addEventListener("viewer-quality-change", handleQualityChange as EventListener);
+    window.addEventListener("viewer-reset-camera", handleResetCamera);
     return () => {
-      window.removeEventListener("viewer-reset-camera" as string, handleResetCamera);
+      window.removeEventListener("viewer-quality-change", handleQualityChange as EventListener);
+      window.removeEventListener("viewer-reset-camera", handleResetCamera);
     };
   }, []);
 

@@ -21,7 +21,13 @@ export async function middleware(request: NextRequest) {
 
   // ─── Authenticated user on landing page → redirect to explore ─────────
   if (pathname === "/") {
-    const hasSession = request.cookies.getAll().some(c => c.name.startsWith('sb-'));
+    // NOTE: This is a quick cookie pre-filter for performance.
+    // Full session validation happens client-side via Supabase auth.
+    // We also validate that the cookie has a non-empty value to avoid
+    // matching empty/deleted session cookies.
+    const hasSession = request.cookies.getAll().some(c =>
+      c.name.startsWith('sb-') && c.value.length > 0
+    );
     if (hasSession) {
       const url = request.nextUrl.clone();
       url.pathname = "/explore";
@@ -40,7 +46,9 @@ export async function middleware(request: NextRequest) {
   const authOnlyRoutes = ["/login", "/auth/login", "/auth/signup", "/auth/forgot-password"];
   const isAuthOnlyRoute = authOnlyRoutes.some((route) => pathname === route || pathname.startsWith(route + "/"));
   if (isAuthOnlyRoute) {
-    const hasSession = request.cookies.getAll().some(c => c.name.startsWith('sb-'));
+    const hasSession = request.cookies.getAll().some(c =>
+      c.name.startsWith('sb-') && c.value.length > 0
+    );
     if (hasSession) {
       // Redirect to a server page that determines the correct post-login
       // destination based on the user's role and properties
@@ -54,7 +62,9 @@ export async function middleware(request: NextRequest) {
   // For protected routes, check if user has a session cookie
   // (the actual auth check is done by Supabase in the page components)
   if (!isPublicRoute) {
-    const hasSession = request.cookies.getAll().some(c => c.name.startsWith('sb-'));
+    const hasSession = request.cookies.getAll().some(c =>
+      c.name.startsWith('sb-') && c.value.length > 0
+    );
     if (!hasSession) {
       // Preserve intended destination for post-login redirect
       const url = request.nextUrl.clone();

@@ -1,9 +1,14 @@
 // ============================================
 // Progressive Scene Streaming System
 // ============================================
-// Handles chunked, LOD-based progressive loading of 3D scenes.
-// Calculates optimal chunk layouts, load orders, and bandwidth
-// requirements for smooth progressive scene delivery.
+// Utility helpers for future progressive scene streaming implementation.
+//
+// NOTE(MI4): The exported functions below (calculateChunkLayout,
+// getOptimalLoadOrder, estimateBandwidthRequirements) and their
+// supporting types (SceneChunk, ViewerPosition) are not yet consumed
+// by any runtime code path. They are intentionally kept here as
+// reference implementations that will be wired into the streaming
+// pipeline once the Web Worker / chunk-fetch layer is in place.
 // ============================================
 
 import type { SceneStreamingConfig } from "@/lib/types";
@@ -192,6 +197,7 @@ export function getOptimalLoadOrder(
  * Normalize an angle to [-PI, PI] range.
  */
 function normalizeAngle(angle: number): number {
+  if (!Number.isFinite(angle)) return 0;
   while (angle > Math.PI) angle -= 2 * Math.PI;
   while (angle < -Math.PI) angle += 2 * Math.PI;
   return angle;

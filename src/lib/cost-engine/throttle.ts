@@ -95,25 +95,32 @@ export async function checkFreeTierLimits(orgId: string): Promise<{
     }
 
     // Count 3D generations (scenes that are ready)
-    const { count: sceneCount, error: sceneError } = await supabase
-      .from("scenes")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "ready")
-      .in(
-        "property_id",
-        (await supabase
-          .from("properties")
-          .select("id")
-          .eq("org_id", orgId)
-        ).data?.map((p: { id: string }) => p.id) ?? [],
-      );
+    // First fetch property IDs, then query scenes — handle errors separately
+    const { data: props, error: propsError } = await supabase
+      .from("properties")
+      .select("id")
+      .eq("org_id", orgId);
 
-    if (sceneError) {
-      console.error("[Throttle] Failed to count scenes for org", orgId, ":", sceneError);
+    if (propsError || !props) {
+      console.error("[Throttle] Failed to fetch properties for org", orgId, ":", propsError);
       verificationFailed = true;
-    } else if (sceneCount !== null) {
-      limits.max3DGenerations.current = sceneCount;
-      limits.max3DGenerations.exceeded = sceneCount >= FREE_TIER_LIMITS.max3DGenerations;
+    } else {
+      const propIds = props.map((p: { id: string }) => p.id);
+      if (propIds.length > 0) {
+        const { count: sceneCount, error: sceneError } = await supabase
+          .from("scenes")
+          .select("id", { count: "exact", head: true })
+          .eq("status", "ready")
+          .in("property_id", propIds);
+
+        if (sceneError) {
+          console.error("[Throttle] Failed to count scenes for org", orgId, ":", sceneError);
+          verificationFailed = true;
+        } else if (sceneCount !== null) {
+          limits.max3DGenerations.current = sceneCount;
+          limits.max3DGenerations.exceeded = sceneCount >= FREE_TIER_LIMITS.max3DGenerations;
+        }
+      }
     }
 
     // Get storage usage from usage_metrics

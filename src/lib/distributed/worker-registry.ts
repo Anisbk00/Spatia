@@ -246,8 +246,33 @@ export class WorkerRegistry {
         .lt("started_at", offlineCutoff);
 
       if (!jobsError && orphanedJobs && orphanedJobs.length > 0) {
+        const MAX_RETRIES = 5; // match the job queue's max
         for (const job of orphanedJobs) {
           const newRetryCount = (job.retry_count ?? 0) + 1;
+
+          // If retry limit exceeded, mark as failed instead
+          if (newRetryCount >= MAX_RETRIES) {
+            const { error: failError } = await supabase
+              .from("processing_jobs")
+              .update({
+                status: "failed",
+                retry_count: newRetryCount,
+                finished_at: new Date().toISOString(),
+              })
+              .eq("id", job.id);
+
+            if (failError) {
+              console.error(
+                `[WorkerRegistry] Failed to mark orphaned job ${job.id} as failed:`,
+                failError,
+              );
+            } else {
+              console.info(
+                `[WorkerRegistry] Marked orphaned job ${job.id} as failed (max retries exceeded)`,
+              );
+            }
+            continue;
+          }
 
           const { error: updateError } = await supabase
             .from("processing_jobs")
