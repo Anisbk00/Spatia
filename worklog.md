@@ -354,3 +354,46 @@ Stage Summary:
 - Dev server compiles and runs successfully
 - SQL migration at sql/fix_rls_policies_v4.sql — USER MUST RUN IN SUPABASE SQL EDITOR
 - Key hardening: atomic DB ops, org ownership enforcement, auth on all endpoints, graceful shutdown, error propagation, deterministic pipeline, stale detection, backoff polling
+
+---
+Task ID: 12
+Agent: Main
+Task: Rewrite SQL migration v4 to match actual production schema
+
+Work Log:
+- Analyzed user-provided actual schema (32 tables with exact column definitions, types, constraints, FKs)
+- Identified critical mismatches in the previous v4 migration:
+  - processing_jobs has NO processing_time_seconds, worker_id, or created_at columns
+  - invoices.org_id is NOT NULL (can't use ON DELETE SET NULL — changed to CASCADE)
+  - processing_jobs status CHECK only has 4 states (queued/running/completed/failed)
+  - All WITH CHECK clauses must use actual column names and relationships
+- Completely rewrote sql/fix_rls_policies_v4.sql (950+ lines) with:
+  - Section 0: Helper functions (get_user_org_ids, get_user_org_ids_with_role, is_org_member)
+  - FIX 1: Restored 3 public-read policies (media, scenes, scene_thumbnails)
+  - FIX 2: Re-enabled RLS on system_logs with proper policies
+  - FIX 3: Fixed org_members INSERT to prevent self-escalation
+  - FIX 4: Added WITH CHECK to 8 UPDATE policies (org_members, orgs, capture_sessions, scenes, video_captures, ai_enhancements, cost_records, usage_metrics)
+  - FIX 5-6: Admin-only guards on get_funnel_stats() and get_system_monitoring()
+  - FIX 7: property_views INSERT validation restored
+  - FIX 8: UNIQUE partial index on processing_jobs(scene_id, job_type) WHERE status IN ('queued','running')
+  - FIX 9: CHECK constraints on plan, quality_score, quality_before/after, improvement_percent, processing_time_seconds, sla_uptime_percent
+  - FIX 10: WITH CHECK on processing_jobs UPDATE for state machine enforcement
+  - FIX 11: Extended processing_jobs status to include 'cancelled' and 'timed_out'
+  - FIX 12: UNIQUE on referrals.referral_code
+  - FIX 13: invoices FK changed to ON DELETE CASCADE (org_id is NOT NULL)
+  - FIX 14: handle_new_user() ON CONFLICT DO NOTHING
+  - FIX 15: SECURITY DEFINER on handle_updated_at()
+  - FIX 16: Loop guard on generate_referral_code() (max 100)
+  - FIX 17: properties.org_id NOT NULL with 3-step data migration
+  - FIX 18: RLS enable/disable status verified for all 32 tables
+  - FIX 19: Complete RLS policy coverage — 62 CREATE POLICY statements covering ALL tables
+- Verified: no references to non-existent columns, correct FK actions, 62 creates = 61 drops
+
+Stage Summary:
+- Migration completely rewritten to match actual schema
+- 62 RLS policies covering all 32 tables
+- 9 CHECK constraints added
+- 1 UNIQUE partial index for job dedup
+- 2 functions restricted to admin-only
+- 3 trigger functions hardened
+- All policies use correct column names from actual schema

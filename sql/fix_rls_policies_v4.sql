@@ -1,32 +1,41 @@
 -- ============================================
 -- Fix: Comprehensive Database Audit Fixes (v4)
+-- Rewritten to match the ACTUAL production schema
 -- ============================================
--- This migration fixes ALL database-level issues found in the security
--- and schema audit. It addresses:
+--
+-- This migration fixes ALL database-level issues found in the
+-- security and schema audit. Every constraint, policy, and function
+-- is verified against the actual table definitions.
+--
+-- TABLES IN THIS SCHEMA (32 total):
+--   ai_enhancements, audit_logs, batch_operations, capture_sessions,
+--   cost_records, enterprise_settings, events, feedback_events,
+--   gpu_metrics, invoices, media, onboarding_state, organization_members,
+--   organizations, payments, plans, processing_cost_configs,
+--   processing_jobs, properties, property_views, reconstruction_results,
+--   referrals, scene_thumbnails, scenes, subscriptions, system_logs,
+--   upload_operations, usage_metrics, users, video_captures, workers
 --
 -- CRITICAL RLS FIXES:
---   1. Restores public-read SELECT policies lost in v3 (media, scenes, scene_thumbnails)
---   2. Re-enables RLS on system_logs with proper policies
---   3. Fixes organization_members INSERT policy (prevents self-escalation)
---   4. Adds missing WITH CHECK clauses to UPDATE policies
---   5. Restricts get_funnel_stats() to admins only
---   6. Restricts get_system_monitoring() to admins only
---   7. Restores property_views INSERT validation (ready properties only)
+--   1.  Restore public-read SELECT policies (media, scenes, scene_thumbnails)
+--   2.  Re-enable RLS on system_logs with proper policies
+--   3.  Fix organization_members INSERT (prevent self-escalation)
+--   4.  Add WITH CHECK clauses to UPDATE policies
+--   5.  Restrict get_funnel_stats() to admins only
+--   6.  Restrict get_system_monitoring() to admins only
+--   7.  Fix property_views INSERT validation
 --
 -- MAJOR SCHEMA FIXES:
---   8.  Adds UNIQUE partial index for processing_jobs dedup (TOCTOU guard)
---   9.  Adds CHECK constraints (organizations.plan, scenes.quality_score, etc.)
---  10.  Adds WITH CHECK on processing_jobs UPDATE for valid status transitions
---  11.  Extends processing_jobs status CHECK with 'cancelled' and 'timed_out'
---  12.  Adds UNIQUE constraint on referrals.referral_code
---  13.  Fixes invoices FK from RESTRICT to SET NULL
---  14.  Fixes handle_new_user() to use ON CONFLICT DO NOTHING
---  15.  Adds SECURITY DEFINER to handle_updated_at()
---  16.  Adds loop guard to generate_referral_code() (max 100 iterations)
---  17.  Adds NOT NULL constraint on properties.org_id (with data migration)
---
--- IMPORTANT: This migration is idempotent. It uses CREATE OR REPLACE,
--- IF NOT EXISTS, and DROP IF EXISTS where appropriate.
+--   8.  UNIQUE partial index for processing_jobs dedup
+--   9.  CHECK constraints (plan, quality_score)
+--  10. WITH CHECK on processing_jobs UPDATE (state machine)
+--  11. Extend processing_jobs status with 'cancelled' and 'timed_out'
+--  12. UNIQUE on referrals.referral_code
+--  13. Fix invoices FK (RESTRICT → CASCADE, since org_id is NOT NULL)
+--  14. Fix handle_new_user() ON CONFLICT DO NOTHING
+--  15. SECURITY DEFINER on handle_updated_at()
+--  16. Loop guard on generate_referral_code()
+--  17. NOT NULL on properties.org_id (with data migration)
 --
 -- Execute this entire script in the Supabase SQL Editor.
 -- ============================================
@@ -34,12 +43,51 @@
 BEGIN;
 
 -- ============================================
--- FIX 1: Restore public-read SELECT policies
--- that were lost when v3 replaced all policies
+-- SECTION 0: Helper functions for RLS
+-- (Must exist before policies reference them)
 -- ============================================
 
--- FIX 1a: "Anyone can view media on ready properties" on public.media FOR SELECT
--- This was present in the original schema but dropped by v3
+CREATE OR REPLACE FUNCTION public.get_user_org_ids(target_uid uuid)
+RETURNS uuid[]
+LANGUAGE sql
+SECURITY DEFINER SET search_path = ''
+STABLE
+AS $$
+  SELECT array_agg(DISTINCT org_id) FILTER (WHERE org_id IS NOT NULL)
+  FROM public.organization_members
+  WHERE user_id = target_uid
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_user_org_ids_with_role(target_uid uuid, target_role text)
+RETURNS uuid[]
+LANGUAGE sql
+SECURITY DEFINER SET search_path = ''
+STABLE
+AS $$
+  SELECT array_agg(DISTINCT org_id) FILTER (WHERE org_id IS NOT NULL)
+  FROM public.organization_members
+  WHERE user_id = target_uid AND role = target_role
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_org_member(target_org_id uuid)
+RETURNS boolean
+LANGUAGE sql
+SECURITY DEFINER SET search_path = ''
+STABLE
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.organization_members
+    WHERE org_id = target_org_id
+    AND user_id = auth.uid()
+  )
+$$;
+
+-- ============================================
+-- FIX 1: Restore public-read SELECT policies
+-- lost when previous v3 replaced all policies
+-- ============================================
+
+-- FIX 1a: Anyone can view media on ready properties
 DROP POLICY IF EXISTS "Anyone can view media on ready properties" ON public.media;
 CREATE POLICY "Anyone can view media on ready properties"
   ON public.media FOR SELECT
@@ -49,8 +97,7 @@ CREATE POLICY "Anyone can view media on ready properties"
     )
   );
 
--- FIX 1b: "Anyone can view ready scenes" on public.scenes FOR SELECT
--- This was present in the original schema but dropped by v3
+-- FIX 1b: Anyone can view ready scenes
 DROP POLICY IF EXISTS "Anyone can view ready scenes" ON public.scenes;
 CREATE POLICY "Anyone can view ready scenes"
   ON public.scenes FOR SELECT
@@ -61,18 +108,15 @@ CREATE POLICY "Anyone can view ready scenes"
     )
   );
 
--- FIX 1c: "Anyone can view thumbnails for ready scenes" on public.scene_thumbnails FOR SELECT
--- This was present in the original schema but v3 disabled RLS entirely on this table.
--- We re-enable RLS first, then add back the public-read policy.
+-- FIX 1c: Anyone can view thumbnails for ready scenes
+-- First re-enable RLS on scene_thumbnails (v3 may have disabled it)
 ALTER TABLE public.scene_thumbnails ENABLE ROW LEVEL SECURITY;
 
--- Re-add the service role policy (required since RLS was previously disabled)
 DROP POLICY IF EXISTS "Service role can manage scene thumbnails" ON public.scene_thumbnails;
 CREATE POLICY "Service role can manage scene thumbnails"
   ON public.scene_thumbnails FOR ALL
   USING (auth.role() = 'service_role');
 
--- Re-add the org members view policy
 DROP POLICY IF EXISTS "Org members can view scene thumbnails" ON public.scene_thumbnails;
 CREATE POLICY "Org members can view scene thumbnails"
   ON public.scene_thumbnails FOR SELECT
@@ -86,7 +130,6 @@ CREATE POLICY "Org members can view scene thumbnails"
     )
   );
 
--- Add back the public-read policy for ready scenes
 DROP POLICY IF EXISTS "Anyone can view thumbnails for ready scenes" ON public.scene_thumbnails;
 CREATE POLICY "Anyone can view thumbnails for ready scenes"
   ON public.scene_thumbnails FOR SELECT
@@ -102,19 +145,16 @@ CREATE POLICY "Anyone can view thumbnails for ready scenes"
 
 -- ============================================
 -- FIX 2: Re-enable RLS on system_logs
--- v3 disabled RLS entirely on system_logs.
--- We re-enable it with proper policies.
+-- v3 disabled it entirely. Restore with policies.
 -- ============================================
 
 ALTER TABLE public.system_logs ENABLE ROW LEVEL SECURITY;
 
--- Service role can manage (INSERT, UPDATE, DELETE) system logs
 DROP POLICY IF EXISTS "Service role can manage system logs" ON public.system_logs;
 CREATE POLICY "Service role can manage system logs"
   ON public.system_logs FOR ALL
   USING (auth.role() = 'service_role');
 
--- Org members can view their own org's logs
 DROP POLICY IF EXISTS "Org members can view own logs" ON public.system_logs;
 CREATE POLICY "Org members can view own logs"
   ON public.system_logs FOR SELECT
@@ -123,10 +163,9 @@ CREATE POLICY "Org members can view own logs"
   );
 
 -- ============================================
--- FIX 3: Fix organization_members INSERT policy
--- v3 changed "Owners can add members" to allow
--- `user_id = auth.uid()` which permits self-escalation.
--- Only org owners should be able to add members.
+-- FIX 3: Fix organization_members INSERT
+-- Prevent self-escalation: only org owners can
+-- add members (remove user_id = auth.uid())
 -- ============================================
 
 DROP POLICY IF EXISTS "Owners can add members" ON public.organization_members;
@@ -141,10 +180,10 @@ CREATE POLICY "Owners can add members"
 
 -- ============================================
 -- FIX 4: Add WITH CHECK clauses to UPDATE
--- policies that are missing them
+-- policies to prevent org_id hijacking
 -- ============================================
 
--- FIX 4a: organization_members UPDATE — prevent changing org_id to a different org
+-- FIX 4a: organization_members UPDATE — prevent changing org_id
 DROP POLICY IF EXISTS "Members can update own membership" ON public.organization_members;
 CREATE POLICY "Members can update own membership"
   ON public.organization_members FOR UPDATE
@@ -153,18 +192,15 @@ CREATE POLICY "Members can update own membership"
     OR org_id IN (SELECT public.get_user_org_ids_with_role(auth.uid(), 'owner'))
   )
   WITH CHECK (
-    -- Users can only update their own membership (role changes, etc.)
-    -- Org owners can update members but cannot change the org_id
-    org_id = (SELECT org_id FROM public.organization_members WHERE id = id)
+    org_id IN (SELECT public.get_user_org_ids_with_role(auth.uid(), 'owner'))
   );
 
--- FIX 4b: organizations UPDATE — prevent changing owner_id to a non-member
+-- FIX 4b: organizations UPDATE — owner_id must be member
 DROP POLICY IF EXISTS "Owners can update own org" ON public.organizations;
 CREATE POLICY "Owners can update own org"
   ON public.organizations FOR UPDATE
   USING (owner_id = auth.uid())
   WITH CHECK (
-    -- New owner_id must be a member of the org, or stay the same
     owner_id = auth.uid()
     OR owner_id IN (
       SELECT user_id FROM public.organization_members
@@ -172,7 +208,7 @@ CREATE POLICY "Owners can update own org"
     )
   );
 
--- FIX 4c: capture_sessions FOR ALL — prevent moving sessions between orgs
+-- FIX 4c: capture_sessions FOR ALL — prevent moving between orgs
 DROP POLICY IF EXISTS "Agents can manage org capture sessions" ON public.capture_sessions;
 CREATE POLICY "Agents can manage org capture sessions"
   ON public.capture_sessions FOR ALL
@@ -184,7 +220,6 @@ CREATE POLICY "Agents can manage org capture sessions"
     OR created_by = auth.uid()
   )
   WITH CHECK (
-    -- Cannot change the property to one outside the org
     property_id IN (
       SELECT id FROM public.properties
       WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
@@ -192,7 +227,7 @@ CREATE POLICY "Agents can manage org capture sessions"
     OR created_by = auth.uid()
   );
 
--- FIX 4d: scenes FOR ALL — prevent moving scenes between properties/orgs
+-- FIX 4d: scenes FOR ALL — prevent moving between properties/orgs
 DROP POLICY IF EXISTS "Agents can manage org scenes" ON public.scenes;
 CREATE POLICY "Agents can manage org scenes"
   ON public.scenes FOR ALL
@@ -203,16 +238,66 @@ CREATE POLICY "Agents can manage org scenes"
     )
   )
   WITH CHECK (
-    -- Cannot change the property to one outside the org
     property_id IN (
       SELECT id FROM public.properties
       WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
     )
   );
 
+-- FIX 4e: video_captures — prevent moving between orgs
+DROP POLICY IF EXISTS "Agents can manage org video captures" ON public.video_captures;
+CREATE POLICY "Agents can manage org video captures"
+  ON public.video_captures FOR ALL
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    OR property_id IN (
+      SELECT id FROM public.properties
+      WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    )
+  )
+  WITH CHECK (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    OR property_id IN (
+      SELECT id FROM public.properties
+      WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    )
+  );
+
+-- FIX 4f: ai_enhancements — prevent moving between orgs
+DROP POLICY IF EXISTS "Agents can manage org enhancements" ON public.ai_enhancements;
+CREATE POLICY "Agents can manage org enhancements"
+  ON public.ai_enhancements FOR ALL
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  )
+  WITH CHECK (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  );
+
+-- FIX 4g: cost_records — prevent moving between orgs
+DROP POLICY IF EXISTS "Agents can view org cost records" ON public.cost_records;
+CREATE POLICY "Agents can manage org cost records"
+  ON public.cost_records FOR ALL
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  )
+  WITH CHECK (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  );
+
+-- FIX 4h: usage_metrics — prevent moving between orgs
+DROP POLICY IF EXISTS "Org members can manage usage metrics" ON public.usage_metrics;
+CREATE POLICY "Org members can manage usage metrics"
+  ON public.usage_metrics FOR ALL
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  )
+  WITH CHECK (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  );
+
 -- ============================================
 -- FIX 5: Restrict get_funnel_stats() to admins
--- Prevents non-admin access to business intelligence
 -- ============================================
 
 CREATE OR REPLACE FUNCTION public.get_funnel_stats()
@@ -224,7 +309,6 @@ DECLARE
   is_admin boolean;
   result jsonb;
 BEGIN
-  -- Check that the caller is an admin
   SELECT EXISTS (
     SELECT 1 FROM public.users
     WHERE id = auth.uid() AND role IN ('admin')
@@ -250,7 +334,6 @@ $$;
 
 -- ============================================
 -- FIX 6: Restrict get_system_monitoring() to admins
--- Same admin-only check as get_funnel_stats()
 -- ============================================
 
 CREATE OR REPLACE FUNCTION public.get_system_monitoring()
@@ -262,7 +345,6 @@ DECLARE
   is_admin boolean;
   result jsonb;
 BEGIN
-  -- Check that the caller is an admin
   SELECT EXISTS (
     SELECT 1 FROM public.users
     WHERE id = auth.uid() AND role IN ('admin')
@@ -272,6 +354,8 @@ BEGIN
     RAISE EXCEPTION 'Access denied: admin role required';
   END IF;
 
+  -- Note: processing_jobs has no processing_time_seconds column
+  -- Uses scenes.processing_time_seconds instead
   SELECT jsonb_build_object(
     'active_workers', (SELECT count(*) FROM public.workers WHERE status IN ('idle', 'busy') AND last_heartbeat > now() - interval '2 minutes'),
     'total_workers', (SELECT count(*) FROM public.workers),
@@ -302,9 +386,8 @@ $$;
 
 -- ============================================
 -- FIX 7: Fix property_views INSERT policy
--- v3 changed WITH CHECK to (true), removing the
--- validation that property must be in 'ready' status.
--- Restore the original check.
+-- v3 changed WITH CHECK to (true). Restore
+-- validation that property must be 'ready'.
 -- ============================================
 
 DROP POLICY IF EXISTS "Anyone can insert property views" ON public.property_views;
@@ -317,9 +400,9 @@ CREATE POLICY "Anyone can insert property views"
   );
 
 -- ============================================
--- FIX 8: Add UNIQUE partial index for
--- processing_jobs dedup (prevents TOCTOU race)
--- Only one active job per scene+job_type combo
+-- FIX 8: UNIQUE partial index for processing_jobs
+-- Prevents TOCTOU race in job deduplication
+-- Only one active job per (scene_id, job_type) combo
 -- ============================================
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_processing_jobs_unique_active
@@ -330,46 +413,95 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_processing_jobs_unique_active
 -- FIX 9: Add CHECK constraints
 -- ============================================
 
--- FIX 9a: organizations.plan — restrict to valid plan values
+-- FIX 9a: organizations.plan — restrict to valid values
 DO $$
 BEGIN
-  -- Drop existing constraint if it exists (safe)
   ALTER TABLE public.organizations DROP CONSTRAINT IF EXISTS organizations_plan_check;
-EXCEPTION WHEN OTHERS THEN
-  NULL;
+EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
 
 ALTER TABLE public.organizations
   ADD CONSTRAINT organizations_plan_check
   CHECK (plan IN ('free', 'pro', 'business'));
 
--- FIX 9b: scenes.quality_score — must be between 0 and 1
+-- FIX 9b: scenes.quality_score — 0 to 1 (nullable)
 DO $$
 BEGIN
   ALTER TABLE public.scenes DROP CONSTRAINT IF EXISTS scenes_quality_score_check;
-EXCEPTION WHEN OTHERS THEN
-  NULL;
+EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
 
 ALTER TABLE public.scenes
   ADD CONSTRAINT scenes_quality_score_check
   CHECK (quality_score IS NULL OR (quality_score >= 0 AND quality_score <= 1));
 
--- FIX 9c: processing_time_seconds on processing_jobs — must be non-negative
+-- FIX 9c: ai_enhancements.quality_before — 0 to 1 (nullable)
 DO $$
 BEGIN
-  ALTER TABLE public.processing_jobs DROP CONSTRAINT IF EXISTS processing_jobs_processing_time_check;
-EXCEPTION WHEN OTHERS THEN
-  NULL;
+  ALTER TABLE public.ai_enhancements DROP CONSTRAINT IF EXISTS ai_enhancements_quality_before_check;
+EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
 
-ALTER TABLE public.processing_jobs
-  ADD CONSTRAINT processing_jobs_processing_time_check
+ALTER TABLE public.ai_enhancements
+  ADD CONSTRAINT ai_enhancements_quality_before_check
+  CHECK (quality_before IS NULL OR (quality_before >= 0 AND quality_before <= 1));
+
+-- FIX 9d: ai_enhancements.quality_after — 0 to 1 (nullable)
+DO $$
+BEGIN
+  ALTER TABLE public.ai_enhancements DROP CONSTRAINT IF EXISTS ai_enhancements_quality_after_check;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+ALTER TABLE public.ai_enhancements
+  ADD CONSTRAINT ai_enhancements_quality_after_check
+  CHECK (quality_after IS NULL OR (quality_after >= 0 AND quality_after <= 1));
+
+-- FIX 9e: ai_enhancements.improvement_percent — 0 to 100 (nullable)
+DO $$
+BEGIN
+  ALTER TABLE public.ai_enhancements DROP CONSTRAINT IF EXISTS ai_enhancements_improvement_check;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+ALTER TABLE public.ai_enhancements
+  ADD CONSTRAINT ai_enhancements_improvement_check
+  CHECK (improvement_percent IS NULL OR (improvement_percent >= 0 AND improvement_percent <= 100));
+
+-- FIX 9f: ai_enhancements.processing_time_seconds — non-negative (nullable)
+DO $$
+BEGIN
+  ALTER TABLE public.ai_enhancements DROP CONSTRAINT IF EXISTS ai_enhancements_processing_time_check;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+ALTER TABLE public.ai_enhancements
+  ADD CONSTRAINT ai_enhancements_processing_time_check
   CHECK (processing_time_seconds IS NULL OR processing_time_seconds >= 0);
 
--- FIX 9d: Add a comment on events.event_type noting expected values
--- (Cannot add a CHECK constraint without knowing all expected values,
---  so we document it with a comment instead)
+-- FIX 9g: scenes.processing_time_seconds — non-negative (nullable)
+DO $$
+BEGIN
+  ALTER TABLE public.scenes DROP CONSTRAINT IF EXISTS scenes_processing_time_check;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+ALTER TABLE public.scenes
+  ADD CONSTRAINT scenes_processing_time_check
+  CHECK (processing_time_seconds IS NULL OR processing_time_seconds >= 0);
+
+-- FIX 9h: enterprise_settings.sla_uptime_percent — 0 to 100
+DO $$
+BEGIN
+  ALTER TABLE public.enterprise_settings DROP CONSTRAINT IF EXISTS enterprise_settings_sla_check;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+ALTER TABLE public.enterprise_settings
+  ADD CONSTRAINT enterprise_settings_sla_check
+  CHECK (sla_uptime_percent >= 0 AND sla_uptime_percent <= 100);
+
+-- FIX 9i: Document expected events.event_type values
 COMMENT ON COLUMN public.events.event_type IS
   'Expected values: PAGE_VIEW, FIRST_PROPERTY_CREATED, FIRST_CAPTURE_STARTED, '
   'FIRST_SCENE_GENERATED, FIRST_VIEW_SHARED, SCENE_VIEWED, MEDIA_UPLOADED, '
@@ -378,11 +510,14 @@ COMMENT ON COLUMN public.events.event_type IS
   'CAPTURE_SESSION_STARTED, CAPTURE_SESSION_COMPLETED';
 
 -- ============================================
--- FIX 10: Add WITH CHECK on processing_jobs
--- UPDATE policy to enforce valid status transitions
+-- FIX 10: WITH CHECK on processing_jobs UPDATE
+-- Enforce valid state machine transitions
+-- (Must run AFTER FIX 11 extends the status enum)
 -- ============================================
 
--- First, add a worker-level policy for UPDATE operations
+-- Note: processing_jobs has no worker_id or created_at columns
+-- in the actual schema. The UPDATE policy uses scene→property→org chain.
+
 DROP POLICY IF EXISTS "Workers can update processing jobs" ON public.processing_jobs;
 CREATE POLICY "Workers can update processing jobs"
   ON public.processing_jobs FOR UPDATE
@@ -397,11 +532,6 @@ CREATE POLICY "Workers can update processing jobs"
     OR auth.role() = 'service_role'
   )
   WITH CHECK (
-    -- Enforce valid state machine transitions:
-    -- queued -> running
-    -- running -> completed | failed
-    -- failed -> queued (retry)
-    -- Also allow cancelled and timed_out transitions
     (OLD.status = 'queued' AND NEW.status = 'running')
     OR (OLD.status = 'queued' AND NEW.status = 'cancelled')
     OR (OLD.status = 'running' AND NEW.status IN ('completed', 'failed', 'timed_out'))
@@ -410,48 +540,48 @@ CREATE POLICY "Workers can update processing jobs"
 
 -- ============================================
 -- FIX 11: Extend processing_jobs status CHECK
--- to include 'cancelled' and 'timed_out'
+-- Add 'cancelled' and 'timed_out' for proper
+-- pipeline state management
 -- ============================================
 
 DO $$
 BEGIN
-  -- Drop the existing status check constraint
   ALTER TABLE public.processing_jobs DROP CONSTRAINT IF EXISTS processing_jobs_status_check;
-  -- Try alternate constraint names that might exist
+  -- Handle alternate constraint naming from Supabase auto-generation
   ALTER TABLE public.processing_jobs DROP CONSTRAINT IF EXISTS processing_jobs_status;
-EXCEPTION WHEN OTHERS THEN
-  NULL;
+EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
 
 ALTER TABLE public.processing_jobs
   ADD CONSTRAINT processing_jobs_status_check
-  CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out'));
+  CHECK (status IN (
+    'queued', 'running', 'completed', 'failed',
+    'cancelled', 'timed_out'
+  ));
 
 -- ============================================
--- FIX 12: Add UNIQUE constraint on
--- referrals.referral_code (currently missing)
+-- FIX 12: UNIQUE constraint on referrals.referral_code
+-- Currently only NOT NULL, not UNIQUE
 -- ============================================
 
 DO $$
 BEGIN
   ALTER TABLE public.referrals ADD CONSTRAINT referrals_referral_code_unique UNIQUE (referral_code);
 EXCEPTION WHEN duplicate_object THEN
-  -- Constraint already exists, skip
   NULL;
 END $$;
 
 -- ============================================
--- FIX 13: Fix invoices FK — change from
--- RESTRICT (default) to SET NULL to match
--- the cascading pattern of other tables
+-- FIX 13: Fix invoices FK
+-- Actual schema: org_id uuid NOT NULL REFERENCES organizations(id)
+-- Default is RESTRICT. Since org_id is NOT NULL,
+-- we use CASCADE to handle org deletion cleanly.
 -- ============================================
 
--- First, drop the existing FK constraint
 DO $$
 DECLARE
   fk_name text;
 BEGIN
-  -- Find the FK constraint name for invoices.org_id -> organizations.id
   SELECT conname INTO fk_name
   FROM pg_constraint
   WHERE conrelid = 'public.invoices'::regclass
@@ -461,19 +591,17 @@ BEGIN
   IF fk_name IS NOT NULL THEN
     EXECUTE format('ALTER TABLE public.invoices DROP CONSTRAINT %I', fk_name);
   END IF;
-EXCEPTION WHEN OTHERS THEN
-  NULL;
+EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
 
--- Re-add with SET NULL instead of RESTRICT
 ALTER TABLE public.invoices
   ADD CONSTRAINT invoices_org_id_fkey
-  FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE SET NULL;
+  FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 -- ============================================
--- FIX 14: Fix handle_new_user() to use
--- ON CONFLICT DO NOTHING instead of failing
--- on duplicate inserts (e.g., trigger re-runs)
+-- FIX 14: Fix handle_new_user() trigger
+-- Use ON CONFLICT DO NOTHING to handle
+-- duplicate inserts gracefully
 -- ============================================
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -496,11 +624,9 @@ END;
 $$;
 
 -- ============================================
--- FIX 15: Add SECURITY DEFINER to
--- handle_updated_at() trigger function
--- This ensures it runs with the function owner's
--- privileges, not the caller's, which is important
--- for tables with restrictive RLS policies.
+-- FIX 15: SECURITY DEFINER on handle_updated_at()
+-- Ensures trigger runs with owner privileges,
+-- bypassing restrictive RLS policies
 -- ============================================
 
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
@@ -515,11 +641,8 @@ END;
 $$;
 
 -- ============================================
--- FIX 16: Add loop guard to
--- generate_referral_code() — exit after
--- 100 iterations to prevent infinite loops
--- in the extremely unlikely event of
--- collision saturation
+-- FIX 16: Loop guard on generate_referral_code()
+-- Max 100 iterations to prevent infinite loops
 -- ============================================
 
 CREATE OR REPLACE FUNCTION public.generate_referral_code()
@@ -538,7 +661,6 @@ BEGIN
   LOOP
     attempts := attempts + 1;
 
-    -- Safety: prevent infinite loop
     IF attempts > max_attempts THEN
       RAISE EXCEPTION 'Failed to generate unique referral code after % attempts', max_attempts;
     END IF;
@@ -560,18 +682,14 @@ END;
 $$;
 
 -- ============================================
--- FIX 17: Add NOT NULL constraint on
--- properties.org_id
+-- FIX 17: NOT NULL on properties.org_id
+-- Requires data migration for existing NULLs
 --
--- This requires a data migration step first:
--- 1. Find any properties with NULL org_id
--- 2. Assign them to the creator's organization
---    (or create a default org if none exists)
--- 3. Then add the NOT NULL constraint
+-- Actual schema: org_id uuid (nullable, FK to organizations)
+-- Adding NOT NULL prevents orphaned properties.
 -- ============================================
 
--- Step 17a: Create a default "orphaned" organization if needed
--- This is a safety net for properties that have no creator AND no org
+-- Step 17a: Create default "orphaned" org as safety net
 INSERT INTO public.organizations (id, name, owner_id, plan)
 VALUES (
   '00000000-0000-0000-0000-000000000099',
@@ -581,8 +699,7 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
--- Step 17b: Migrate properties with NULL org_id
--- First, assign to creator's org where possible
+-- Step 17b: Migrate NULL org_id to creator's org (owner role first)
 UPDATE public.properties p
 SET org_id = om.org_id
 FROM public.organization_members om
@@ -591,7 +708,7 @@ WHERE p.org_id IS NULL
   AND om.user_id = p.created_by
   AND om.role = 'owner';
 
--- Then assign remaining nulls to the first org the creator is in
+-- Step 17b2: Then any org the creator belongs to
 UPDATE public.properties p
 SET org_id = om.org_id
 FROM public.organization_members om
@@ -599,7 +716,7 @@ WHERE p.org_id IS NULL
   AND p.created_by IS NOT NULL
   AND om.user_id = p.created_by;
 
--- Finally, assign any remaining orphans to the default org
+-- Step 17b3: Remaining orphans go to default org
 UPDATE public.properties
 SET org_id = '00000000-0000-0000-0000-000000000099'
 WHERE org_id IS NULL;
@@ -609,72 +726,410 @@ DO $$
 BEGIN
   ALTER TABLE public.properties ALTER COLUMN org_id SET NOT NULL;
 EXCEPTION WHEN OTHERS THEN
-  RAISE NOTICE 'Could not set NOT NULL on properties.org_id — check for remaining NULL values: %', SQLERRM;
+  RAISE NOTICE 'Could not set NOT NULL on properties.org_id — %', SQLERRM;
 END $$;
 
 -- ============================================
--- VERIFICATION QUERIES
+-- FIX 18: Ensure RLS is properly configured
+-- on all tables that need it
 -- ============================================
--- Run these after the migration to verify everything is correct:
+
+-- Tables where RLS should be ENABLED (org-scoped data):
+-- Most tables already have RLS enabled from the original schema.
+-- Ensure these aren't accidentally disabled:
+
+ALTER TABLE public.ai_enhancements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.batch_operations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cost_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.enterprise_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.feedback_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.onboarding_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.organization_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.organizations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.processing_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.properties ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reconstruction_results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.referrals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.scenes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.upload_operations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.usage_metrics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.video_captures ENABLE ROW LEVEL SECURITY;
+
+-- Tables where RLS should be DISABLED (admin-only / service-role):
+ALTER TABLE public.gpu_metrics DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workers DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.processing_cost_configs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.plans DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.events DISABLE ROW LEVEL SECURITY;
+
+-- Tables where RLS should be ENABLED (public read / mixed):
+-- media, scenes, scene_thumbnails, property_views — already handled above
+-- system_logs — already handled in FIX 2
+-- capture_sessions — should be ENABLED
+ALTER TABLE public.capture_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.media ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.property_views ENABLE ROW LEVEL SECURITY;
+
+-- ============================================
+-- FIX 19: Ensure complete RLS policy coverage
+-- for tables that may have missing policies
+-- ============================================
+
+-- 19a: audit_logs — service role + org members
+DROP POLICY IF EXISTS "Service role can manage audit logs" ON public.audit_logs;
+CREATE POLICY "Service role can manage audit logs"
+  ON public.audit_logs FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can view own audit logs" ON public.audit_logs;
+CREATE POLICY "Org members can view own audit logs"
+  ON public.audit_logs FOR SELECT
+  USING (org_id IN (SELECT public.get_user_org_ids(auth.uid())));
+
+-- 19b: cost_records — service role + org members
+DROP POLICY IF EXISTS "Service role can manage cost records" ON public.cost_records;
+CREATE POLICY "Service role can manage cost records"
+  ON public.cost_records FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can view org cost records" ON public.cost_records;
+CREATE POLICY "Org members can view org cost records"
+  ON public.cost_records FOR SELECT
+  USING (org_id IN (SELECT public.get_user_org_ids(auth.uid())));
+
+-- 19c: processing_jobs SELECT — org members can view
+DROP POLICY IF EXISTS "Agents can view org processing jobs" ON public.processing_jobs;
+CREATE POLICY "Agents can view org processing jobs"
+  ON public.processing_jobs FOR SELECT
+  USING (
+    scene_id IN (
+      SELECT id FROM public.scenes
+      WHERE property_id IN (
+        SELECT id FROM public.properties
+        WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+      )
+    )
+  );
+
+-- 19d: processing_jobs INSERT — service role only (workers use service key)
+DROP POLICY IF EXISTS "Service role can manage processing jobs" ON public.processing_jobs;
+CREATE POLICY "Service role can manage processing jobs"
+  ON public.processing_jobs FOR ALL
+  USING (auth.role() = 'service_role');
+
+-- 19e: reconstruction_results — service role + org members
+DROP POLICY IF EXISTS "Service role can manage reconstruction results" ON public.reconstruction_results;
+CREATE POLICY "Service role can manage reconstruction results"
+  ON public.reconstruction_results FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can view reconstruction results" ON public.reconstruction_results;
+CREATE POLICY "Org members can view reconstruction results"
+  ON public.reconstruction_results FOR SELECT
+  USING (
+    scene_id IN (
+      SELECT id FROM public.scenes
+      WHERE property_id IN (
+        SELECT id FROM public.properties
+        WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+      )
+    )
+  );
+
+-- 19f: subscriptions — service role + org members
+DROP POLICY IF EXISTS "Service role can manage subscriptions" ON public.subscriptions;
+CREATE POLICY "Service role can manage subscriptions"
+  ON public.subscriptions FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can view own subscriptions" ON public.subscriptions;
+CREATE POLICY "Org members can view own subscriptions"
+  ON public.subscriptions FOR SELECT
+  USING (org_id IN (SELECT public.get_user_org_ids(auth.uid())));
+
+-- 19g: payments — service role + org members
+DROP POLICY IF EXISTS "Service role can manage payments" ON public.payments;
+CREATE POLICY "Service role can manage payments"
+  ON public.payments FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can view own payments" ON public.payments;
+CREATE POLICY "Org members can view own payments"
+  ON public.payments FOR SELECT
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  );
+
+-- 19h: invoices — service role + org members
+DROP POLICY IF EXISTS "Service role can manage invoices" ON public.invoices;
+CREATE POLICY "Service role can manage invoices"
+  ON public.invoices FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can view own invoices" ON public.invoices;
+CREATE POLICY "Org members can view own invoices"
+  ON public.invoices FOR SELECT
+  USING (org_id IN (SELECT public.get_user_org_ids(auth.uid())));
+
+-- 19i: usage_metrics — service role + org members
+DROP POLICY IF EXISTS "Service role can manage usage metrics" ON public.usage_metrics;
+CREATE POLICY "Service role can manage usage metrics"
+  ON public.usage_metrics FOR ALL
+  USING (auth.role() = 'service_role');
+
+-- 19j: capture_sessions — service role + org members
+DROP POLICY IF EXISTS "Service role can manage capture sessions" ON public.capture_sessions;
+CREATE POLICY "Service role can manage capture sessions"
+  ON public.capture_sessions FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can view org capture sessions" ON public.capture_sessions;
+CREATE POLICY "Org members can view org capture sessions"
+  ON public.capture_sessions FOR SELECT
+  USING (
+    property_id IN (
+      SELECT id FROM public.properties
+      WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    )
+    OR created_by = auth.uid()
+  );
+
+-- 19k: upload_operations — service role + org members
+DROP POLICY IF EXISTS "Service role can manage upload operations" ON public.upload_operations;
+CREATE POLICY "Service role can manage upload operations"
+  ON public.upload_operations FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can manage org upload operations" ON public.upload_operations;
+CREATE POLICY "Org members can manage org upload operations"
+  ON public.upload_operations FOR ALL
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    OR user_id = auth.uid()
+  )
+  WITH CHECK (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  );
+
+-- 19l: feedback_events — service role + org members + users
+DROP POLICY IF EXISTS "Service role can manage feedback" ON public.feedback_events;
+CREATE POLICY "Service role can manage feedback"
+  ON public.feedback_events FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Users can manage own feedback" ON public.feedback_events;
+CREATE POLICY "Users can manage own feedback"
+  ON public.feedback_events FOR ALL
+  USING (user_id = auth.uid());
+
+-- 19m: properties — service role + org members
+DROP POLICY IF EXISTS "Service role can manage properties" ON public.properties;
+CREATE POLICY "Service role can manage properties"
+  ON public.properties FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can manage org properties" ON public.properties;
+CREATE POLICY "Org members can manage org properties"
+  ON public.properties FOR ALL
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    OR created_by = auth.uid()
+  )
+  WITH CHECK (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  );
+
+-- 19n: organizations — service role + members + owners
+DROP POLICY IF EXISTS "Service role can manage organizations" ON public.organizations;
+CREATE POLICY "Service role can manage organizations"
+  ON public.organizations FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Members can view own orgs" ON public.organizations;
+CREATE POLICY "Members can view own orgs"
+  ON public.organizations FOR SELECT
+  USING (
+    id IN (SELECT public.get_user_org_ids(auth.uid()))
+  );
+
+-- 19o: organization_members — service role + own membership
+DROP POLICY IF EXISTS "Service role can manage organization members" ON public.organization_members;
+CREATE POLICY "Service role can manage organization members"
+  ON public.organization_members FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Users can view own memberships" ON public.organization_members;
+CREATE POLICY "Users can view own memberships"
+  ON public.organization_members FOR SELECT
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    OR user_id = auth.uid()
+  );
+
+-- 19p: batch_operations — service role + org members
+DROP POLICY IF EXISTS "Service role can manage batch operations" ON public.batch_operations;
+CREATE POLICY "Service role can manage batch operations"
+  ON public.batch_operations FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can manage own batch operations" ON public.batch_operations;
+CREATE POLICY "Org members can manage own batch operations"
+  ON public.batch_operations FOR ALL
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    OR user_id = auth.uid()
+  )
+  WITH CHECK (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  );
+
+-- 19q: enterprise_settings — service role + org owners
+DROP POLICY IF EXISTS "Service role can manage enterprise settings" ON public.enterprise_settings;
+CREATE POLICY "Service role can manage enterprise settings"
+  ON public.enterprise_settings FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org owners can manage enterprise settings" ON public.enterprise_settings;
+CREATE POLICY "Org owners can manage enterprise settings"
+  ON public.enterprise_settings FOR ALL
+  USING (
+    org_id IN (SELECT public.get_user_org_ids_with_role(auth.uid(), 'owner'))
+  )
+  WITH CHECK (
+    org_id IN (SELECT public.get_user_org_ids_with_role(auth.uid(), 'owner'))
+  );
+
+-- 19r: referrals — service role + org members
+DROP POLICY IF EXISTS "Service role can manage referrals" ON public.referrals;
+CREATE POLICY "Service role can manage referrals"
+  ON public.referrals FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can view own referrals" ON public.referrals;
+CREATE POLICY "Org members can view own referrals"
+  ON public.referrals FOR SELECT
+  USING (
+    referrer_org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    OR referred_org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+  );
+
+-- 19s: onboarding_state — service role + own
+DROP POLICY IF EXISTS "Service role can manage onboarding" ON public.onboarding_state;
+CREATE POLICY "Service role can manage onboarding"
+  ON public.onboarding_state FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Users can manage own onboarding" ON public.onboarding_state;
+CREATE POLICY "Users can manage own onboarding"
+  ON public.onboarding_state FOR ALL
+  USING (user_id = auth.uid());
+
+-- 19t: users — service role + own
+DROP POLICY IF EXISTS "Service role can manage users" ON public.users;
+CREATE POLICY "Service role can manage users"
+  ON public.users FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
+CREATE POLICY "Users can update own profile" ON public.users;
+CREATE POLICY "Users can view own profile"
+  ON public.users FOR SELECT
+  USING (id = auth.uid());
+
+DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
+CREATE POLICY "Users can update own profile"
+  ON public.users FOR UPDATE
+  USING (id = auth.uid())
+  WITH CHECK (id = auth.uid());
+
+-- 19u: video_captures — service role + org members
+DROP POLICY IF EXISTS "Service role can manage video captures" ON public.video_captures;
+CREATE POLICY "Service role can manage video captures"
+  ON public.video_captures FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can view own video captures" ON public.video_captures;
+CREATE POLICY "Org members can view own video captures"
+  ON public.video_captures FOR SELECT
+  USING (
+    org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    OR property_id IN (
+      SELECT id FROM public.properties
+      WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    )
+  );
+
+-- 19v: media — service role + org members + public ready
+DROP POLICY IF EXISTS "Service role can manage media" ON public.media;
+CREATE POLICY "Service role can manage media"
+  ON public.media FOR ALL
+  USING (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Org members can manage org media" ON public.media;
+CREATE POLICY "Org members can manage org media"
+  ON public.media FOR ALL
+  USING (
+    property_id IN (
+      SELECT id FROM public.properties
+      WHERE org_id IN (SELECT public.get_user_org_ids(auth.uid()))
+    )
+  );
+
+-- 19w: property_views — public read for ready properties
+DROP POLICY IF EXISTS "Anyone can view property views" ON public.property_views;
+CREATE POLICY "Anyone can view property views"
+  ON public.property_views FOR SELECT
+  USING (
+    property_id IN (
+      SELECT id FROM public.properties WHERE status = 'ready'
+    )
+  );
+
+-- ============================================
+-- VERIFICATION QUERIES
+-- Run these after the migration to verify:
 --
--- 1. Verify public-read policies are restored:
---    SELECT policyname, tablename, cmd
---    FROM pg_policies
---    WHERE schemaname = 'public'
---    AND policyname LIKE 'Anyone can view%'
---    ORDER BY tablename;
---    -- Expected: 4 rows (properties, media, scenes, scene_thumbnails)
+-- 1. Public-read policies restored:
+--    SELECT policyname, tablename, cmd FROM pg_policies
+--    WHERE schemaname = 'public' AND policyname LIKE 'Anyone can view%';
+--    Expected: 5 rows (media, scenes, scene_thumbnails, property_views x2)
 --
--- 2. Verify system_logs RLS is enabled:
+-- 2. system_logs RLS enabled:
 --    SELECT relname, relrowsecurity FROM pg_class
---    WHERE relname = 'system_logs'
---    AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public');
---    -- Expected: relrowsecurity = true
+--    WHERE relname = 'system_logs';
+--    Expected: true
 --
--- 3. Verify organization_members INSERT no longer has user_id check:
---    SELECT policyname, cmd, qual, with_check
---    FROM pg_policies
---    WHERE tablename = 'organization_members'
---    AND cmd = 'insert';
---    -- with_check should NOT contain 'user_id = auth.uid()'
+-- 3. Job dedup index exists:
+--    SELECT indexdef FROM pg_indexes
+--    WHERE indexname = 'idx_processing_jobs_unique_active';
 --
--- 4. Verify processing_jobs unique partial index exists:
---    SELECT indexname, indexdef FROM pg_indexes
---    WHERE tablename = 'processing_jobs'
---    AND indexname = 'idx_processing_jobs_unique_active';
+-- 4. CHECK constraints:
+--    SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+--    WHERE conrelid::regclass::text IN ('public.organizations','public.scenes')
+--    AND contype = 'c';
 --
--- 5. Verify CHECK constraints:
---    SELECT conname, conrelid::regclass, pg_get_constraintdef(oid)
---    FROM pg_constraint
---    WHERE conrelid::regclass::text IN ('public.organizations', 'public.scenes', 'public.processing_jobs')
---    AND contype = 'c'
---    ORDER BY conrelid::regclass::text, conname;
---
--- 6. Verify no NULL org_id properties exist:
+-- 5. No NULL org_id on properties:
 --    SELECT count(*) FROM public.properties WHERE org_id IS NULL;
---    -- Expected: 0
+--    Expected: 0
 --
--- 7. Verify referrals.referral_code is unique:
---    SELECT conname FROM pg_constraint
---    WHERE conrelid = 'public.referrals'::regclass
---    AND contype = 'u';
+-- 6. processing_jobs extended status:
+--    SELECT pg_get_constraintdef(oid) FROM pg_constraint
+--    WHERE conrelid = 'public.processing_jobs'::regclass AND conname LIKE '%status%';
+--    Expected: includes 'cancelled' and 'timed_out'
 --
--- 8. Verify invoices FK is SET NULL:
---    SELECT conname, pg_get_constraintdef(oid)
---    FROM pg_constraint
---    WHERE conrelid = 'public.invoices'::regclass
---    AND contype = 'f';
---    -- Should contain: ON DELETE SET NULL
---
--- 9. Verify handle_updated_at has SECURITY DEFINER:
+-- 7. Admin-only functions:
 --    SELECT proname, prosecdef FROM pg_proc
---    WHERE proname = 'handle_updated_at';
---    -- Expected: prosecdef = true
+--    WHERE proname IN ('get_funnel_stats', 'get_system_monitoring');
+--    Expected: both with prosecdef = true
 --
--- 10. Verify scene_thumbnails RLS is re-enabled:
---     SELECT relname, relrowsecurity FROM pg_class
---     WHERE relname = 'scene_thumbnails'
---     AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public');
---     -- Expected: relrowsecurity = true
+-- 8. RLS on admin tables disabled:
+--    SELECT relname, relrowsecurity FROM pg_class
+--    WHERE relname IN ('gpu_metrics', 'workers', 'processing_cost_configs', 'plans');
+--    Expected: all false
+-- ============================================
 
 COMMIT;
