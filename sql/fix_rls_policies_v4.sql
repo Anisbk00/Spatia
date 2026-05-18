@@ -771,7 +771,6 @@ CREATE POLICY "Users can manage own onboarding" ON public.onboarding_state FOR A
 DROP POLICY IF EXISTS "Service role can manage users" ON public.users;
 CREATE POLICY "Service role can manage users" ON public.users FOR ALL USING (auth.role() = 'service_role');
 DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
-CREATE POLICY "Users can update own profile" ON public.users;
 CREATE POLICY "Users can view own profile" ON public.users FOR SELECT USING (id = auth.uid());
 DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
 CREATE POLICY "Users can update own profile" ON public.users FOR UPDATE USING (id = auth.uid()) WITH CHECK (id = auth.uid());
