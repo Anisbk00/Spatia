@@ -106,8 +106,8 @@ export class BatchWriter {
               error.message?.includes('network') ||
               error.message?.includes('timeout') ||
               error.message?.includes('ECONNREFUSED') ||
-              error.code === '5XX' ||
-              (typeof error.status === 'number' && error.status >= 500);
+              error.message?.includes('5') ||
+              error.code === '5XX';
 
             if (!isRetryable || retries >= this.maxRetries) {
               console.error('[BatchWriter] Non-retryable error:', error.message);
