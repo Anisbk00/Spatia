@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { SpatiaLogo } from "@/components/SpatiaLogo";
-import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -148,34 +147,6 @@ export default function LandingPage() {
 
   return (
     <div className="min-h-screen flex flex-col bg-background" style={{ scrollBehavior: "smooth" }}>
-      {/* ─── HEADER ─────────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-md">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
-          <div className="flex items-center gap-2">
-            <SpatiaLogo size="sm" />
-            <span className="font-semibold tracking-tight text-base">{tc("appName")}</span>
-          </div>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <LanguageSwitcher variant="ghost" />
-            <Button
-              variant="ghost"
-              size="sm"
-              className="hidden sm:inline-flex text-sm"
-              onClick={() => router.push("/auth/login")}
-            >
-              {t("navSignIn")}
-            </Button>
-            <Button
-              size="sm"
-              className="text-sm bg-emerald-600 hover:bg-emerald-700"
-              onClick={handlePrimaryCta}
-            >
-              {t("navStartFree")}
-            </Button>
-          </div>
-        </div>
-      </header>
-
       {/* ─── HERO SECTION ───────────────────────────────────────────────────── */}
       <section className="relative overflow-hidden border-b" aria-label="Hero">
         {/* Subtle gradient background */}
