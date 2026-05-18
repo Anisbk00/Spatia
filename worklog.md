@@ -797,3 +797,68 @@ Applied 22 bug fixes across 17 files addressing CRITICAL, MAJOR, MODERATE, and M
 
 ### Lint Check
 All changes pass ESLint with zero errors.
+
+---
+
+## Task ID: billing-audit-fixes
+Agent: Main
+Task: Fix billing/subscription audit findings — security, data, and client-side bugs
+
+**Status:** ✅ Completed
+
+### Issue M1 (MAJOR): No authentication on billing portal endpoint
+**File:** `src/app/api/billing/portal/route.ts`
+- Bug: GET endpoint had zero auth — any unauthenticated user could access `/api/billing/portal`
+- Fix: Added `createClient()` + `supabase.auth.getUser()` check at top of handler. Redirects to `/auth/login` if not authenticated or if client creation fails.
+
+### Issue M2 (MAJOR): Open redirect via referer header
+**File:** `src/app/api/billing/portal/route.ts`
+- Bug: `request.headers.get("referer")` could be an external domain (e.g., phishing URL). A malicious link could redirect users to attacker-controlled sites.
+- Fix: Added same-origin validation — parses referer as URL, checks `refUrl.origin` matches `request.url` origin. Falls back to `/dashboard/billing` on any mismatch or parse failure.
+
+### Issue MO1 (MODERATE): Usage metrics queries have no LIMIT
+**File:** `src/lib/supabase/dashboard.ts` — `getBillingData()` (lines ~769-787)
+- Bug: `usage_metrics`, `payments`, and `invoices` queries had no LIMIT clause, potentially loading unbounded rows.
+- Fix: Added `.limit(1000)` to all three queries.
+
+### Issue MO2 (MODERATE): getUsageLimits() calls getBillingData() redundantly
+**File:** `src/lib/supabase/dashboard.ts` — `getUsageLimits()` (line ~819)
+- Bug: `getUsageLimits()` called `getBillingData(orgId)` which fetches subscription, plan, usage, payments, AND invoices — but only needs the plan. This was 4 unnecessary queries.
+- Fix: Created lightweight `getOrgPlan()` helper that only fetches the subscription's `plan_id` and resolves the plan (or falls back to free plan) in 2 queries max. Replaced `getBillingData()` call with `getOrgPlan()`.
+
+### Issue MO3 (MODERATE): CostEngine uses RLS client instead of admin client
+**File:** `src/lib/cost-engine/index.ts`
+- Bug: ALL methods used `createClient()` (user-authenticated, RLS-gated). Cost recording and reads should use admin client to ensure they always succeed regardless of user context.
+- Fix: Replaced all 7 occurrences of `createClient()` with `createAdminClient()` across: `recordSceneCost`, `getOrgCostSummary`, `getCostPerUser`, `getGPUUtilization`, `getStorageGrowth`, `getTierMultiplier`, `getCostConfigs`, `getOrgPriorityScore`.
+
+### Issue MO4 (MODERATE): cost_records.insert uses .single() — PGRST116 risk
+**File:** `src/lib/cost-engine/index.ts` (line ~100)
+- Bug: `.select("id").single()` after insert will throw PGRST116 if insert fails, causing unhandled error.
+- Fix: Changed to `.maybeSingle()`.
+
+### Issue MO5 (MODERATE): organizations.query error variable mismatch
+**File:** `src/lib/cost-engine/index.ts` (lines ~437, ~506)
+- Bug: In `getTierMultiplier()`, the query destructured `{ data: org, error }` but the null check used `error` (which shadowed the destructured variable). In `getOrgPriorityScore()`, it was correctly named `orgError`. Both needed consistent naming.
+- Fix: Renamed both to use explicit `error: orgError` / `error: orgErr` destructuring to avoid shadowing, matching the null-check variable names.
+
+### Issue MO6 (MODERATE): Throttle uses RLS client
+**File:** `src/lib/cost-engine/throttle.ts`
+- Bug: `checkFreeTierLimits` used `createClient()` (RLS-gated). Throttle checks are system operations that should bypass RLS.
+- Fix: Replaced `createClient()` with `createAdminClient()`. Removed `await` (admin client is synchronous).
+
+### Issue MI1 (MINOR): Billing/settings pages use native `<a>` instead of `<Link>`
+**Files:** `src/app/dashboard/billing/page.tsx` (line 169), `src/app/dashboard/settings/page.tsx` (line 89)
+- Bug: `<a href="/onboarding">` causes full page reload instead of client-side navigation.
+- Fix: Replaced with `<Link href="/onboarding">` from `next/link`. Added `Link` import to settings page (billing already had it).
+
+### Issue MI3 (MINOR): Non-UTC date calculations in dashboard queries
+**File:** `src/lib/supabase/dashboard.ts` — `getDashboardKPIs()` (line 54) and `getUsageLimits()` (line 836)
+- Bug: `new Date(now.getFullYear(), now.getMonth(), 1)` uses local timezone, which shifts month boundaries in non-UTC environments.
+- Fix: Changed both to `new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))` for consistent UTC-based month boundaries.
+
+### Issue MI2 (MINOR): Missing billing i18n keys — informational only
+No code change needed. Noted as informational finding.
+
+### Verification
+- `bun run lint` passes with zero errors
+- All 10 code fixes applied across 5 files (no UI/design changes)

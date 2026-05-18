@@ -51,7 +51,7 @@ export async function getDashboardKPIs(orgId: string) {
   }
 
   const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 
   // Step 1: Get property IDs (must be first since other queries depend on them)
   const { data: orgProperties } = await supabase
@@ -770,21 +770,24 @@ export async function getBillingData(orgId: string): Promise<BillingData> {
     .from("usage_metrics")
     .select("*")
     .eq("org_id", orgId)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(1000);
 
   // Get payments
   const { data: payments } = await supabase
     .from("payments")
     .select("*")
     .eq("org_id", orgId)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(1000);
 
   // Get invoices
   const { data: invoices } = await supabase
     .from("invoices")
     .select("*")
     .eq("org_id", orgId)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(1000);
 
   return {
     subscription: subscription as Subscription | null,
@@ -805,6 +808,24 @@ export type UsageLimits = {
   generations: { used: number; limit: number | null };
 };
 
+/**
+ * Lightweight helper that only fetches the plan for an org,
+ * without pulling subscription, usage, payments, or invoices.
+ */
+async function getOrgPlan(orgId: string): Promise<Plan | null> {
+  const supabase = await getReadClient();
+  if (!supabase) return null;
+  // Try subscription first
+  const { data: sub } = await supabase.from("subscriptions").select("plan_id").eq("org_id", orgId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (sub?.plan_id) {
+    const { data: plan } = await supabase.from("plans").select("*").eq("id", sub.plan_id).maybeSingle();
+    return plan as Plan | null;
+  }
+  // Default to free plan
+  const { data: freePlan } = await supabase.from("plans").select("*").eq("name", "free").maybeSingle();
+  return freePlan as Plan | null;
+}
+
 export async function getUsageLimits(orgId: string): Promise<UsageLimits> {
   const supabase = await getReadClient();
   const defaults: UsageLimits = {
@@ -815,9 +836,8 @@ export async function getUsageLimits(orgId: string): Promise<UsageLimits> {
 
   if (!supabase) return defaults;
 
-  // Get current plan limits
-  const billing = await getBillingData(orgId);
-  const plan = billing.plan;
+  // Get current plan limits (lightweight — only fetches plan, not full billing data)
+  const plan = await getOrgPlan(orgId);
 
   // Get actual usage
   const { count: propertyCount } = await supabase
@@ -833,7 +853,7 @@ export async function getUsageLimits(orgId: string): Promise<UsageLimits> {
     .order("created_at", { ascending: false })
     .limit(1);
 
-  const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  const startOfMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString();
   const { data: genMetrics } = await supabase
     .from("usage_metrics")
     .select("value")

@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import { createClient } from "@/lib/supabase/server";
 import { getUserOrganization } from "@/lib/supabase/dashboard";
@@ -86,7 +87,7 @@ export default async function SettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button asChild><a href="/onboarding">{tc("createOrganization")}</a></Button>
+            <Button asChild><Link href="/onboarding">{tc("createOrganization")}</Link></Button>
           </CardContent>
         </Card>
       </div>

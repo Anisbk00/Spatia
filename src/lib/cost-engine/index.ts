@@ -6,7 +6,7 @@
 // Gracefully handles missing Supabase configuration.
 // ============================================
 
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/server";
 import type { CostRecord, CostSummary, CostType, ProcessingCostConfig } from "@/lib/types";
 import { checkFreeTierLimits } from "./throttle";
 
@@ -67,7 +67,7 @@ export class CostEngine {
     metadata?: Record<string, unknown>;
   }): Promise<string | null> {
     try {
-      const supabase = await createClient();
+      const supabase = createAdminClient();
       if (!supabase) return null;
 
       const now = new Date();
@@ -97,7 +97,7 @@ export class CostEngine {
           billing_period_end: billingPeriodEnd,
         })
         .select("id")
-        .single();
+        .maybeSingle();
 
       if (error) {
         console.error("[CostEngine] Failed to record cost:", error);
@@ -122,7 +122,7 @@ export class CostEngine {
     periodEnd?: string,
   ): Promise<CostSummary | null> {
     try {
-      const supabase = await createClient();
+      const supabase = createAdminClient();
       if (!supabase) return null;
 
       const start = periodStart ?? new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString();
@@ -202,7 +202,7 @@ export class CostEngine {
     costPerUser: number;
   }> {
     try {
-      const supabase = await createClient();
+      const supabase = createAdminClient();
       if (!supabase) return { totalCost: 0, userCount: 0, costPerUser: 0 };
 
       // Get member count
@@ -238,7 +238,7 @@ export class CostEngine {
     byRegion: Record<string, { utilization: number; memoryUsed: number }>;
   }> {
     try {
-      const supabase = await createClient();
+      const supabase = createAdminClient();
       if (!supabase) {
         return {
           avgUtilization: 0,
@@ -334,7 +334,7 @@ export class CostEngine {
     projectedMbNext30Days: number;
   }> {
     try {
-      const supabase = await createClient();
+      const supabase = createAdminClient();
       if (!supabase) {
         return { currentMb: 0, growthRateMbPerDay: 0, projectedMbNext30Days: 0 };
       }
@@ -427,16 +427,16 @@ export class CostEngine {
   // ------------------------------------------
   async getTierMultiplier(orgId: string, costType: CostType): Promise<number> {
     try {
-      const supabase = await createClient();
+      const supabase = createAdminClient();
       if (!supabase) return 1.0;
 
-      const { data: org, error } = await supabase
+      const { data: org, error: orgError } = await supabase
         .from("organizations")
         .select("plan")
         .eq("id", orgId)
         .single();
 
-      if (error || !org) return 1.0;
+      if (orgError || !org) return 1.0;
 
       const plan = (org.plan ?? "free").toLowerCase();
       const planMultipliers = PLAN_MULTIPLIERS[plan] ?? PLAN_MULTIPLIERS.free;
@@ -452,7 +452,7 @@ export class CostEngine {
   // ------------------------------------------
   async getCostConfigs(): Promise<ProcessingCostConfig[]> {
     try {
-      const supabase = await createClient();
+      const supabase = createAdminClient();
       if (!supabase) return [];
 
       const { data, error } = await supabase
@@ -494,18 +494,18 @@ export class CostEngine {
     monthlySpend: number;
   }> {
     try {
-      const supabase = await createClient();
+      const supabase = createAdminClient();
       if (!supabase) {
         return { score: 25, plan: "free", isEnterprise: false, monthlySpend: 0 };
       }
 
-      const { data: org, error: orgError } = await supabase
+      const { data: org, error: orgErr } = await supabase
         .from("organizations")
         .select("plan")
         .eq("id", orgId)
         .single();
 
-      if (orgError || !org) {
+      if (orgErr || !org) {
         return { score: 25, plan: "free", isEnterprise: false, monthlySpend: 0 };
       }
 

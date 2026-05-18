@@ -13,7 +13,7 @@
 // `verificationFailed` flag.
 // ============================================
 
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/server";
 
 // ============================================
 // Free tier limits
@@ -57,7 +57,7 @@ export async function checkFreeTierLimits(orgId: string): Promise<{
   let verificationFailed = false;
 
   try {
-    const supabase = await createClient();
+    const supabase = createAdminClient();
     if (!supabase) {
       // Can't verify — return with verificationFailed flag
       return { exceeded: false, limits, verificationFailed: true };
